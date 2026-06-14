@@ -1,21 +1,70 @@
 <?php
+ob_start();
 include 'auth.php';
 include_once 'surveyor-permission.php';
 
-requireRole(['super_admin', 'matrimonial_admin', 'village_surveyor']);
+/*
+    Database connection safety:
+    Agar auth.php me $conn nahi aa raha hai, to common connection files try karega.
+*/
+if (!isset($conn) || !$conn) {
+    $possible_db_files = [
+        'db.php',
+        'config.php',
+        'connection.php',
+        '../db.php',
+        '../config.php',
+        '../connection.php',
+        'includes/db.php',
+        'includes/config.php',
+        '../includes/db.php',
+        '../includes/config.php'
+    ];
 
-if (function_exists('requireSection')) {
-    requireSection($conn, 'matrimonial');
+    foreach ($possible_db_files as $db_file) {
+        if (file_exists(__DIR__ . '/' . $db_file)) {
+            include_once __DIR__ . '/' . $db_file;
+            if (isset($conn) && $conn) {
+                break;
+            }
+        }
+    }
 }
 
-ob_start();
-include 'includes/header.php';
-include 'includes/sidebar.php';
+/*
+    Agar abhi bhi $conn nahi mila, to direct XAMPP local connection.
+    Aapke phpMyAdmin screenshot me port 3307 aur database vjm_db hai.
+*/
+if (!isset($conn) || !$conn) {
+    $conn = mysqli_connect("127.0.0.1", "root", "", "vjm_db", 3307);
 
-$table = 'matrimonial_users'; // Website register-m-m.php se profile isi table me save hoti hai
+    if (!$conn) {
+        die("Database connection failed: " . mysqli_connect_error());
+    }
+}
 
-// Profile photo folder project root me hai: VISHWAKARMA-JAGRUTI-MANCH/profile-photo/
-$profile_photo_folder = 'profile-photo';
+mysqli_set_charset($conn, "utf8mb4");
+
+/*
+    Village Survey page:
+    - super_admin / matrimonial_admin / matrimonial_manager = sabhi profile dekh sakte hain
+    - village_surveyor = sirf allotted gaon ke matrimonial profile dekh sakta hai
+*/
+requireRole(['super_admin', 'matrimonial_admin', 'matrimonial_manager', 'village_surveyor']);
+
+/*
+    Section permission optional rakha hai.
+    Agar aap section permission use karna chahte hain, to neeche wali line uncomment karein
+    aur user_section_permissions table me section_name='matrimonial' entry add karein.
+*/
+// if (function_exists('requireSection')) {
+//     requireSection($conn, 'matrimonial');
+// }
+
+$table = 'matrimonial_users'; // Agar aapki table ka naam alag ho to yaha change kare
+
+// Profile photo folder project root me hai: VISHWAKARMA-JAGRUTI-MANCH/profile-photp/
+$profile_photo_folder = 'profile-photp';
 $profile_photo_fs_dir = realpath(__DIR__ . '/..') ? realpath(__DIR__ . '/..') . DIRECTORY_SEPARATOR . $profile_photo_folder . DIRECTORY_SEPARATOR : __DIR__ . DIRECTORY_SEPARATOR . $profile_photo_folder . DIRECTORY_SEPARATOR;
 $profile_photo_url_dir = '../' . $profile_photo_folder . '/';
 $default_profile_img = '../images/default-profile.png';
@@ -71,254 +120,64 @@ function matri_profile_img_src($file_name, $url_dir, $default_img) {
     return $default_img;
 }
 
-function matri_admin_role() {
-    return $_SESSION['admin_role'] ?? ($_SESSION['role'] ?? '');
-}
-
-function matri_admin_id() {
-    return (int)($_SESSION['admin_id'] ?? ($_SESSION['id'] ?? 0));
-}
-
-function matri_is_super_admin() {
-    return matri_admin_role() === 'super_admin';
-}
-
-function matri_is_village_surveyor() {
-    return matri_admin_role() === 'village_surveyor';
-}
-
-function matri_village_columns($conn, $table) {
-    $cols = [];
-    foreach (['village_rajasthan', 'village', 'village_name'] as $col) {
-        if (matri_column_exists($conn, $table, $col)) {
-            $cols[] = $col;
-        }
-    }
-    return $cols;
-}
-
-function matri_allowed_villages($conn) {
-    if (!matri_is_village_surveyor()) {
-        return [];
-    }
-
-    if (function_exists('sp_admin_id')) {
-        $admin_id = (int)sp_admin_id();
-    } else {
-        $admin_id = matri_admin_id();
-    }
-
-    if ($admin_id <= 0) {
-        return [];
-    }
-
-    if (function_exists('getSurveyorVillages')) {
-        $villages = getSurveyorVillages($conn, $admin_id);
-        if (is_array($villages)) {
-            return array_values(array_filter(array_map('trim', $villages)));
-        }
-    }
-
-    /*
-        Fallback: agar surveyor-permission.php me getSurveyorVillages function nahi hai,
-        to common permission table names se village/city nikalne ki koshish karega.
-    */
-    $villages = [];
-    foreach (['admin_village_permissions', 'surveyor_permissions', 'admin_permissions'] as $perm_table) {
-        if (!table_exists($conn, $perm_table)) {
-            continue;
+/*
+    surveyVillageSqlAnyColumn:
+    Ye helper village_surveyor ke allotted gaon ko multiple village columns
+    me check karta hai. Isse agar data village_rajasthan / village / village_name
+    kisi bhi column me ho to filter sahi chalega.
+*/
+if (!function_exists('surveyVillageSqlAnyColumn')) {
+    function surveyVillageSqlAnyColumn($conn, $table, $columns = [], $alias = '') {
+        if (function_exists('isSuperAdmin') && isSuperAdmin()) {
+            return '';
         }
 
-        foreach (['village', 'village_name', 'city'] as $vcol) {
-            if (!matri_column_exists($conn, $perm_table, $vcol)) {
-                continue;
-            }
-
-            $q = $conn->query("SELECT `$vcol` AS village FROM `$perm_table` WHERE admin_id='$admin_id'");
-            if ($q) {
-                while ($r = $q->fetch_assoc()) {
-                    $v = trim($r['village'] ?? '');
-                    if ($v !== '') {
-                        $villages[] = $v;
-                    }
-                }
-            }
+        if (function_exists('isVillageSurveyor') && !isVillageSurveyor()) {
+            return '';
         }
-    }
 
-    return array_values(array_unique($villages));
-}
+        if (!function_exists('getSurveyorVillages') || !function_exists('sp_admin_id')) {
+            return '';
+        }
 
-function matri_village_where_sql($conn, $table, $alias = '') {
-    if (!matri_is_village_surveyor()) {
-        return '';
-    }
+        $allowed_villages = getSurveyorVillages($conn, sp_admin_id());
 
-    $allowed_villages = matri_allowed_villages($conn);
-    if (empty($allowed_villages)) {
-        return " AND 0";
-    }
+        if (empty($allowed_villages)) {
+            return " AND 0 ";
+        }
 
-    $cols = matri_village_columns($conn, $table);
-    if (empty($cols)) {
-        return " AND 0";
-    }
-
-    $prefix = $alias !== '' ? "`$alias`." : '';
-    $parts = [];
-
-    foreach ($cols as $col) {
-        $values = [];
+        $escaped = [];
         foreach ($allowed_villages as $village) {
-            $values[] = "'" . $conn->real_escape_string($village) . "'";
+            $village = trim($village);
+            if ($village !== '') {
+                $escaped[] = "'" . $conn->real_escape_string($village) . "'";
+            }
         }
 
-        if (!empty($values)) {
-            $parts[] = $prefix . "`$col` IN (" . implode(',', $values) . ")";
-        }
-    }
-
-    if (empty($parts)) {
-        return " AND 0";
-    }
-
-    return " AND (" . implode(" OR ", $parts) . ")";
-}
-
-function matri_can_access_profile($conn, $table, $profile_id) {
-    if (matri_is_super_admin() || matri_admin_role() === 'matrimonial_admin') {
-        return true;
-    }
-
-    if (!matri_is_village_surveyor()) {
-        return false;
-    }
-
-    $profile_id = (int)$profile_id;
-    if ($profile_id <= 0) {
-        return false;
-    }
-
-    $allowed_villages = matri_allowed_villages($conn);
-    if (empty($allowed_villages)) {
-        return false;
-    }
-
-    $cols = matri_village_columns($conn, $table);
-    if (empty($cols)) {
-        return false;
-    }
-
-    $select_cols = [];
-    foreach ($cols as $col) {
-        $select_cols[] = "`$col`";
-    }
-
-    $q = $conn->query("SELECT " . implode(',', $select_cols) . " FROM `$table` WHERE id='$profile_id' LIMIT 1");
-    if (!$q || $q->num_rows === 0) {
-        return false;
-    }
-
-    $row = $q->fetch_assoc();
-
-    foreach ($cols as $col) {
-        $profile_village = trim($row[$col] ?? '');
-        if ($profile_village !== '' && in_array($profile_village, $allowed_villages, true)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-function matri_post_village_allowed($conn, $table, $data) {
-    if (!matri_is_village_surveyor()) {
-        return true;
-    }
-
-    $allowed_villages = matri_allowed_villages($conn);
-    if (empty($allowed_villages)) {
-        return false;
-    }
-
-    $cols = matri_village_columns($conn, $table);
-    foreach ($cols as $col) {
-        if (!empty($data[$col]) && in_array(trim($data[$col]), $allowed_villages, true)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-function matri_status_update_sql($conn, $table, $status_action) {
-    $set = [];
-
-    if ($status_action === 'approved') {
-        $set[] = "verification_status='admin_approved'";
-
-        if (matri_column_exists($conn, $table, 'status')) {
-            $set[] = "status='approved'";
+        if (empty($escaped)) {
+            return " AND 0 ";
         }
 
-        if (matri_column_exists($conn, $table, 'verified')) {
-            $set[] = "verified='1'";
+        $prefix = '';
+        if ($alias !== '') {
+            $prefix = "`" . str_replace('`', '', $alias) . "`.";
         }
 
-        if (matri_column_exists($conn, $table, 'verified_at')) {
-            $set[] = "verified_at=NOW()";
+        $parts = [];
+
+        foreach ($columns as $col) {
+            if (matri_column_exists($conn, $table, $col)) {
+                $safe_col = "`" . str_replace('`', '', $col) . "`";
+                $parts[] = "{$prefix}{$safe_col} IN (" . implode(',', $escaped) . ")";
+            }
         }
+
+        if (empty($parts)) {
+            return " AND 0 ";
+        }
+
+        return " AND (" . implode(" OR ", $parts) . ") ";
     }
-
-    if ($status_action === 'rejected') {
-        $set[] = "verification_status='rejected'";
-
-        if (matri_column_exists($conn, $table, 'status')) {
-            $set[] = "status='pending'";
-        }
-
-        if (matri_column_exists($conn, $table, 'verified')) {
-            $set[] = "verified='0'";
-        }
-    }
-
-    if ($status_action === 'pending') {
-        $set[] = "verification_status='pending'";
-
-        if (matri_column_exists($conn, $table, 'status')) {
-            $set[] = "status='pending'";
-        }
-
-        if (matri_column_exists($conn, $table, 'verified')) {
-            $set[] = "verified='0'";
-        }
-    }
-
-    if ($status_action === 'village_verified') {
-        $set[] = "verification_status='village_verified'";
-
-        if (matri_column_exists($conn, $table, 'verified')) {
-            $set[] = "verified='1'";
-        }
-
-        if (matri_column_exists($conn, $table, 'verified_at')) {
-            $set[] = "verified_at=NOW()";
-        }
-    }
-
-    if ($status_action === 'correction_required') {
-        $set[] = "verification_status='correction_required'";
-
-        if (matri_column_exists($conn, $table, 'status')) {
-            $set[] = "status='pending'";
-        }
-
-        if (matri_column_exists($conn, $table, 'verified')) {
-            $set[] = "verified='0'";
-        }
-    }
-
-    return implode(',', $set);
 }
 
 if (!table_exists($conn, $table)) {
@@ -342,59 +201,121 @@ matri_add_column_if_missing($conn, $table, 'verified_at', "DATETIME DEFAULT NULL
 $conn->query("UPDATE `$table` SET verification_status='pending' WHERE verification_status IS NULL OR verification_status=''");
 $conn->query("UPDATE `$table` SET status='pending' WHERE status IS NULL OR status=''");
 
-// Verification action: approved / rejected / pending / village verified / correction
+// Verification action
 if (isset($_GET['action'], $_GET['id'])) {
     $id = (int)$_GET['id'];
     $action = $_GET['action'];
 
-    $action_map = [
-        'approve' => 'approved',
-        'reject' => 'rejected',
-        'pending' => 'pending',
-        'village_verify' => 'village_verified',
-        'correction' => 'correction_required'
-    ];
-
-    if ($id <= 0 || !isset($action_map[$action])) {
-        die("Invalid action");
+    if (!surveyorCanAccessMatrimonial($conn, $id)) {
+        die("Access Denied: Aapko is gaon ka matrimonial profile access nahi hai.");
     }
 
-    if (!matri_can_access_profile($conn, $table, $id)) {
-        die("Access Denied: Aap sirf apne allotted gaon ke profile ka status change kar sakte hain.");
-    }
+    if ($id > 0 && matri_column_exists($conn, $table, 'verification_status')) {
+        if ($action === 'village_verify') {
+            $sql = "UPDATE `$table` SET verification_status='village_verified'";
 
-    if (matri_column_exists($conn, $table, 'verification_status')) {
-        $set_sql = matri_status_update_sql($conn, $table, $action_map[$action]);
+            if (matri_column_exists($conn, $table, 'verified_at')) {
+                $sql .= ", verified_at=NOW()";
+            }
+            if (matri_column_exists($conn, $table, 'verified')) {
+                $sql .= ", verified='1'";
+            }
 
-        if ($set_sql !== '') {
-            $conn->query("UPDATE `$table` SET $set_sql WHERE id=$id");
+            $sql .= " WHERE id=$id";
+            $conn->query($sql);
+        }
+
+        if ($action === 'pending') {
+            $sql = "UPDATE `$table` SET verification_status='pending'";
+            if (matri_column_exists($conn, $table, 'status')) {
+                $sql .= ", status='pending'";
+            }
+            if (matri_column_exists($conn, $table, 'verified')) {
+                $sql .= ", verified='0'";
+            }
+            $sql .= " WHERE id=$id";
+            $conn->query($sql);
+        }
+
+        /*
+            Village Surveyor ka Approve = Village Verified
+            Super Admin / Matrimonial Admin ka Approve = Admin Approved
+        */
+        if ($action === 'approve') {
+            if (function_exists('isVillageSurveyor') && isVillageSurveyor()) {
+                $sql = "UPDATE `$table` SET verification_status='village_verified'";
+                if (matri_column_exists($conn, $table, 'verified')) {
+                    $sql .= ", verified='1'";
+                }
+                if (matri_column_exists($conn, $table, 'verified_at')) {
+                    $sql .= ", verified_at=NOW()";
+                }
+                $sql .= " WHERE id=$id";
+                $conn->query($sql);
+            } else {
+                $sql = "UPDATE `$table` SET verification_status='admin_approved'";
+                if (matri_column_exists($conn, $table, 'status')) {
+                    $sql .= ", status='approved'";
+                }
+                if (matri_column_exists($conn, $table, 'verified')) {
+                    $sql .= ", verified='1'";
+                }
+                if (matri_column_exists($conn, $table, 'verified_at')) {
+                    $sql .= ", verified_at=NOW()";
+                }
+                $sql .= " WHERE id=$id";
+                $conn->query($sql);
+            }
+        }
+
+        if ($action === 'reject') {
+            $sql = "UPDATE `$table` SET verification_status='rejected'";
+            if (matri_column_exists($conn, $table, 'status')) {
+                $sql .= ", status='pending'";
+            }
+            if (matri_column_exists($conn, $table, 'verified')) {
+                $sql .= ", verified='0'";
+            }
+            $sql .= " WHERE id=$id";
+            $conn->query($sql);
+        }
+
+        if ($action === 'correction') {
+            $sql = "UPDATE `$table` SET verification_status='correction_required'";
+            if (matri_column_exists($conn, $table, 'status')) {
+                $sql .= ", status='pending'";
+            }
+            if (matri_column_exists($conn, $table, 'verified')) {
+                $sql .= ", verified='0'";
+            }
+            $sql .= " WHERE id=$id";
+            $conn->query($sql);
         }
     }
 
-    redirect('matrimonial.php');
+    redirect('village-survey.php');
 }
 
 // Delete
 if (isset($_GET['delete'])) {
     $id = (int)$_GET['delete'];
 
-    if ($id > 0) {
-        if (!matri_can_access_profile($conn, $table, $id)) {
-            die("Access Denied: Aap sirf apne allotted gaon ka profile delete kar sakte hain.");
-        }
-
-        $conn->query("DELETE FROM `$table` WHERE id=$id");
+    if (!surveyorCanAccessMatrimonial($conn, $id)) {
+        die("Access Denied: Aapko is gaon ka matrimonial profile delete access nahi hai.");
     }
 
-    redirect('matrimonial.php');
+    if ($id > 0) {
+        $conn->query("DELETE FROM `$table` WHERE id=$id");
+    }
+    redirect('village-survey.php');
 }
 
 $edit = [];
 if (isset($_GET['edit'])) {
     $id = (int)$_GET['edit'];
 
-    if (!matri_can_access_profile($conn, $table, $id)) {
-        die("Access Denied: Aap sirf apne allotted gaon ka profile edit kar sakte hain.");
+    if (!surveyorCanAccessMatrimonial($conn, $id)) {
+        die("Access Denied: Aapko is gaon ka matrimonial profile edit access nahi hai.");
     }
 
     $res = $conn->query("SELECT * FROM `$table` WHERE id=$id LIMIT 1");
@@ -406,11 +327,10 @@ if (isset($_GET['edit'])) {
 // Save / Update
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $allowed_cols = [
-        'user_id', 'full_name', 'name', 'gender', 'mobile', 'phone', 'email', 'mobile_email', 'password', 'gotra',
+        'full_name', 'name', 'gender', 'mobile', 'phone', 'email', 'mobile_email', 'password', 'gotra',
         'state', 'district', 'tahsil', 'village_rajasthan', 'village', 'village_name',
-        'current_city', 'current_address', 'address', 'marital_status', 'education', 'occupation',
-        'dob', 'age', 'height', 'income', 'father_name', 'mother_name',
-        'status', 'verified', 'verification_status', 'profile_photo', 'photo'
+        'current_address', 'address', 'marital_status', 'education', 'occupation',
+        'dob', 'age', 'status', 'verified', 'verification_status', 'profile_photo'
     ];
 
     $data = [];
@@ -428,16 +348,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    if (!matri_post_village_allowed($conn, $table, $data)) {
-        die("Access Denied: Aap sirf apne allotted gaon ka matrimonial profile add/edit kar sakte hain.");
-    }
-
-    // matrimonial_users table me user_id current website user se link hota hai.
-    // Admin manually add kare to user_id blank hone par 0 save hoga.
-    if (matri_column_exists($conn, $table, 'user_id') && empty($data['user_id'])) {
-        $data['user_id'] = '0';
-    }
-
     // अगर mobile_email खाली है तो email या mobile से बना दो
     if (matri_column_exists($conn, $table, 'mobile_email')) {
         if (empty($data['mobile_email'])) {
@@ -452,7 +362,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Verification status ke hisab se status/verified auto set
     if (isset($data['verification_status']) && $data['verification_status'] === 'admin_approved') {
         if (matri_column_exists($conn, $table, 'status')) {
-            $data['status'] = 'approved';
+            $data['status'] = 'active';
         }
         if (matri_column_exists($conn, $table, 'verified')) {
             $data['verified'] = '1';
@@ -466,15 +376,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // Profile photo upload / update
-    // matrimonial_users me column profile_photo ho sakta hai, matrimonial_profiles me photo column hai.
-    $photo_col = '';
-    if (matri_column_exists($conn, $table, 'profile_photo')) {
-        $photo_col = 'profile_photo';
-    } elseif (matri_column_exists($conn, $table, 'photo')) {
-        $photo_col = 'photo';
-    }
-
-    if ($photo_col !== '' && !empty($_FILES['profile_photo']['name'])) {
+    if (matri_column_exists($conn, $table, 'profile_photo') && !empty($_FILES['profile_photo']['name'])) {
         if (!is_dir($profile_photo_fs_dir)) {
             mkdir($profile_photo_fs_dir, 0777, true);
         }
@@ -489,15 +391,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $target_file = $profile_photo_fs_dir . $file_name;
 
             if (move_uploaded_file($_FILES['profile_photo']['tmp_name'], $target_file)) {
-                $data[$photo_col] = $file_name;
+                $data['profile_photo'] = $file_name;
             }
         }
     }
 
     $id = !empty($_POST['id']) ? (int)$_POST['id'] : 0;
 
-    if ($id > 0 && !matri_can_access_profile($conn, $table, $id)) {
-        die("Access Denied: Aap sirf apne allotted gaon ka matrimonial profile update kar sakte hain.");
+    if ($id > 0 && !surveyorCanAccessMatrimonial($conn, $id)) {
+        die("Access Denied: Aapko is gaon ka matrimonial profile edit access nahi hai.");
+    }
+
+    if (isVillageSurveyor()) {
+        $allowed_villages = getSurveyorVillages($conn, sp_admin_id());
+
+        if (empty($allowed_villages)) {
+            die("Access Denied: Aapko koi village allot nahi hai.");
+        }
+
+        $posted_village = '';
+        foreach (['village_rajasthan', 'village', 'village_name'] as $vcol) {
+            if (!empty($data[$vcol])) {
+                $posted_village = trim($data[$vcol]);
+                break;
+            }
+        }
+
+        if ($posted_village != '' && !in_array($posted_village, $allowed_villages, true)) {
+            die("Access Denied: Aap sirf allotted gaon ka profile add/edit kar sakte hain.");
+        }
     }
 
     /*
@@ -571,8 +493,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             echo "<script>
-                alert('Matrimonial profile updated successfully');
-                window.location.href='matrimonial.php';
+                alert('Matrimonial user updated successfully');
+                window.location.href='village-survey.php';
             </script>";
             exit;
 
@@ -589,8 +511,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             echo "<script>
-                alert('Matrimonial profile added successfully');
-                window.location.href='matrimonial.php';
+                alert('Matrimonial user added successfully');
+                window.location.href='village-survey.php';
             </script>";
             exit;
         }
@@ -612,12 +534,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $search = $_GET['search'] ?? '';
 $status_filter = matri_safe_status($_GET['status_filter'] ?? '');
 $where = "WHERE 1";
-$where .= matri_village_where_sql($conn, $table);
+$where .= surveyVillageSqlAnyColumn($conn, $table, ['village_rajasthan', 'village', 'village_name', 'city']);
 
 if ($search !== '') {
     $s = $conn->real_escape_string($search);
     $searchParts = [];
-    foreach (['full_name', 'name', 'mobile', 'phone', 'email', 'gotra', 'city', 'district', 'tahsil', 'village_rajasthan', 'village', 'village_name', 'current_city'] as $col) {
+    foreach (['full_name', 'name', 'mobile', 'phone', 'email', 'gotra', 'district', 'village_rajasthan', 'village', 'village_name'] as $col) {
         if (matri_column_exists($conn, $table, $col)) {
             $searchParts[] = "`$col` LIKE '%$s%'";
         }
@@ -632,63 +554,18 @@ if ($status_filter !== '' && matri_column_exists($conn, $table, 'verification_st
     $where .= " AND verification_status='$st'";
 }
 
-$show_payment_cols = table_exists($conn, 'matrimonial_user_plans');
-
-// Pagination: ek page par sirf 6 profiles show hongi
-$per_page = 6;
-$page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
-if ($page < 1) {
-    $page = 1;
-}
-
-$list_total_profiles_q = $conn->query("SELECT COUNT(*) AS total FROM `$table` $where");
-$list_total_profiles = (int)($list_total_profiles_q->fetch_assoc()['total'] ?? 0);
-$total_pages = (int)ceil($list_total_profiles / $per_page);
-if ($total_pages < 1) {
-    $total_pages = 1;
-}
-if ($page > $total_pages) {
-    $page = $total_pages;
-}
-$offset = ($page - 1) * $per_page;
-
-if ($show_payment_cols) {
-    $list_res = $conn->query("
-        SELECT m.*,
-            (SELECT mup.transaction_id
-             FROM matrimonial_user_plans mup
-             WHERE mup.user_id = m.id OR (m.user_id IS NOT NULL AND mup.user_id = m.user_id)
-             ORDER BY mup.id DESC
-             LIMIT 1) AS latest_transaction_id,
-            (SELECT mup.payment_status
-             FROM matrimonial_user_plans mup
-             WHERE mup.user_id = m.id OR (m.user_id IS NOT NULL AND mup.user_id = m.user_id)
-             ORDER BY mup.id DESC
-             LIMIT 1) AS latest_payment_status,
-            (SELECT mp.plan_name
-             FROM matrimonial_user_plans mup
-             LEFT JOIN matrimonial_plans mp ON mp.id = mup.plan_id
-             WHERE mup.user_id = m.id OR (m.user_id IS NOT NULL AND mup.user_id = m.user_id)
-             ORDER BY mup.id DESC
-             LIMIT 1) AS latest_plan_name
-        FROM `$table` m
-        $where
-        ORDER BY m.id DESC
-        LIMIT $per_page OFFSET $offset
-    ");
-} else {
-    $list_res = $conn->query("SELECT * FROM `$table` $where ORDER BY id DESC LIMIT $per_page OFFSET $offset");
-}
+$list_res = $conn->query("SELECT * FROM `$table` $where ORDER BY id DESC LIMIT 200");
 
 $stats_where = "WHERE 1";
-$stats_where .= matri_village_where_sql($conn, $table);
+$stats_where .= surveyVillageSqlAnyColumn($conn, $table, ['village_rajasthan', 'village', 'village_name', 'city']);
 
 $total_profiles = (int)($conn->query("SELECT COUNT(*) AS total FROM `$table` $stats_where")->fetch_assoc()['total'] ?? 0);
 $pending_profiles = matri_column_exists($conn, $table, 'verification_status') ? (int)($conn->query("SELECT COUNT(*) AS total FROM `$table` $stats_where AND verification_status='pending'")->fetch_assoc()['total'] ?? 0) : 0;
-$approved_profiles = matri_column_exists($conn, $table, 'verification_status') ? (int)($conn->query("SELECT COUNT(*) AS total FROM `$table` $stats_where AND verification_status='admin_approved'")->fetch_assoc()['total'] ?? 0) : 0;
+$approved_profiles = matri_column_exists($conn, $table, 'verification_status') ? (int)($conn->query("SELECT COUNT(*) AS total FROM `$table` $stats_where AND verification_status IN ('village_verified','admin_approved')")->fetch_assoc()['total'] ?? 0) : 0;
 $rejected_profiles = matri_column_exists($conn, $table, 'verification_status') ? (int)($conn->query("SELECT COUNT(*) AS total FROM `$table` $stats_where AND verification_status='rejected'")->fetch_assoc()['total'] ?? 0) : 0;
+include 'includes/header.php';
+include 'includes/sidebar.php';
 ?>
-
 
 <style>
 .matri-stats-wrap{
@@ -728,34 +605,6 @@ $rejected_profiles = matri_column_exists($conn, $table, 'verification_status') ?
     gap:6px;
     min-width:260px;
 }
-.matri-pagination{
-    display:flex;
-    justify-content:center;
-    align-items:center;
-    gap:8px;
-    flex-wrap:wrap;
-    margin-top:18px;
-}
-.matri-page-btn{
-    padding:7px 13px;
-    border-radius:8px;
-    border:1px solid rgba(255,211,106,.65);
-    color:#ffd36a;
-    text-decoration:none;
-    font-weight:700;
-    background:rgba(255,255,255,.06);
-}
-.matri-page-btn:hover,
-.matri-page-btn.active{
-    background:#ffd36a;
-    color:#160303;
-}
-.matri-page-info{
-    text-align:center;
-    color:#ffd36a;
-    font-weight:700;
-    margin-top:12px;
-}
 @media(max-width:900px){
     .matri-stats-wrap{grid-template-columns:repeat(2,1fr);}
 }
@@ -764,18 +613,12 @@ $rejected_profiles = matri_column_exists($conn, $table, 'verification_status') ?
 }
 </style>
 
-<h2 class="page-title">Matrimonial Management</h2>
-
-<?php if (matri_is_village_surveyor()): ?>
-    <div class="alert alert-info">
-        Aapko sirf allotted gaon ke matrimonial profiles dikh rahe hain.
-    </div>
-<?php endif; ?>
+<h2 class="page-title">Village Survey - Matrimonial Profiles</h2>
 
 <div class="matri-stats-wrap mb-4">
     <div class="matri-stat-card"><span>Total Profiles</span><b><?= $total_profiles ?></b></div>
     <div class="matri-stat-card"><span>Pending</span><b><?= $pending_profiles ?></b></div>
-    <div class="matri-stat-card"><span>Approved</span><b><?= $approved_profiles ?></b></div>
+    <div class="matri-stat-card"><span>Approved / Verified</span><b><?= $approved_profiles ?></b></div>
     <div class="matri-stat-card"><span>Rejected</span><b><?= $rejected_profiles ?></b></div>
 </div>
 
@@ -786,15 +629,12 @@ $rejected_profiles = matri_column_exists($conn, $table, 'verification_status') ?
         <input type="hidden" name="id" value="<?= e($edit['id'] ?? '') ?>">
 
         <div class="row">
-            <?php if (matri_column_exists($conn, $table, 'profile_photo') || matri_column_exists($conn, $table, 'photo')): ?>
+            <?php if (matri_column_exists($conn, $table, 'profile_photo')): ?>
             <div class="col-md-4">
                 <label>Profile Photo</label>
-                <?php
-                    $edit_photo = $edit['profile_photo'] ?? ($edit['photo'] ?? '');
-                ?>
-                <?php if (!empty($edit_photo)): ?>
+                <?php if (!empty($edit['profile_photo'])): ?>
                     <div class="mb-2">
-                        <img src="<?= e(matri_profile_img_src($edit_photo, $profile_photo_url_dir, $default_profile_img)) ?>" class="matri-profile-thumb" alt="Profile">
+                        <img src="<?= e(matri_profile_img_src($edit['profile_photo'], $profile_photo_url_dir, $default_profile_img)) ?>" class="matri-profile-thumb" alt="Profile">
                     </div>
                 <?php endif; ?>
                 <input type="file" name="profile_photo" class="form-control mb-2" accept="image/*">
@@ -950,42 +790,13 @@ $rejected_profiles = matri_column_exists($conn, $table, 'verification_status') ?
                 <input type="number" name="age" class="form-control mb-2" value="<?= e($edit['age'] ?? '') ?>">
             </div>
             <?php endif; ?>
-            <?php if (matri_column_exists($conn, $table, 'height')): ?>
-            <div class="col-md-4">
-                <label>Height</label>
-                <input type="text" name="height" class="form-control mb-2" value="<?= e($edit['height'] ?? '') ?>">
-            </div>
-            <?php endif; ?>
-
-            <?php if (matri_column_exists($conn, $table, 'income')): ?>
-            <div class="col-md-4">
-                <label>Income</label>
-                <input type="text" name="income" class="form-control mb-2" value="<?= e($edit['income'] ?? '') ?>">
-            </div>
-            <?php endif; ?>
-
-            <?php if (matri_column_exists($conn, $table, 'father_name')): ?>
-            <div class="col-md-4">
-                <label>Father Name</label>
-                <input type="text" name="father_name" class="form-control mb-2" value="<?= e($edit['father_name'] ?? '') ?>">
-            </div>
-            <?php endif; ?>
-
-            <?php if (matri_column_exists($conn, $table, 'mother_name')): ?>
-            <div class="col-md-4">
-                <label>Mother Name</label>
-                <input type="text" name="mother_name" class="form-control mb-2" value="<?= e($edit['mother_name'] ?? '') ?>">
-            </div>
-            <?php endif; ?>
-
 
             <?php if (matri_column_exists($conn, $table, 'status')): ?>
             <div class="col-md-4">
                 <label>Account Status</label>
                 <select name="status" class="form-select mb-2">
-                    <option value="pending" <?= (($edit['status'] ?? '') === 'pending') ? 'selected' : '' ?>>pending</option>
-                    <option value="approved" <?= (($edit['status'] ?? '') === 'approved') ? 'selected' : '' ?>>approved</option>
-                    <option value="rejected" <?= (($edit['status'] ?? '') === 'rejected') ? 'selected' : '' ?>>rejected</option>
+                    <option value="active" <?= (($edit['status'] ?? '') === 'active') ? 'selected' : '' ?>>active</option>
+                    <option value="inactive" <?= (($edit['status'] ?? '') === 'inactive') ? 'selected' : '' ?>>inactive</option>
                 </select>
             </div>
             <?php endif; ?>
@@ -1022,14 +833,6 @@ $rejected_profiles = matri_column_exists($conn, $table, 'verification_status') ?
             </div>
             <?php endif; ?>
 
-
-            <?php if (matri_column_exists($conn, $table, 'current_city')): ?>
-            <div class="col-md-4">
-                <label>Current City</label>
-                <input type="text" name="current_city" class="form-control mb-2" value="<?= e($edit['current_city'] ?? '') ?>">
-            </div>
-            <?php endif; ?>
-
             <?php if (matri_column_exists($conn, $table, 'current_address')): ?>
             <div class="col-md-12">
                 <label>Current Address</label>
@@ -1046,7 +849,7 @@ $rejected_profiles = matri_column_exists($conn, $table, 'verification_status') ?
         </div>
 
         <button class="btn btn-gold mt-2">Save</button>
-        <a href="matrimonial.php" class="btn btn-secondary mt-2">Clear</a>
+        <a href="village-survey.php" class="btn btn-secondary mt-2">Clear</a>
     </form>
 </div>
 
@@ -1083,21 +886,16 @@ $rejected_profiles = matri_column_exists($conn, $table, 'verification_status') ?
             <thead>
                 <tr>
                     <th>ID</th>
-                    <?php if (matri_column_exists($conn, $table, 'profile_photo') || matri_column_exists($conn, $table, 'photo')) echo '<th>Photo</th>'; ?>
+                    <?php if (matri_column_exists($conn, $table, 'profile_photo')) echo '<th>Photo</th>'; ?>
                     <?php if (matri_column_exists($conn, $table, 'full_name')) echo '<th>Full Name</th>'; ?>
                     <?php if (matri_column_exists($conn, $table, 'name')) echo '<th>Name</th>'; ?>
                     <?php if (matri_column_exists($conn, $table, 'gender')) echo '<th>Gender</th>'; ?>
                     <?php if (matri_column_exists($conn, $table, 'mobile')) echo '<th>Mobile</th>'; ?>
                     <?php if (matri_column_exists($conn, $table, 'gotra')) echo '<th>Gotra</th>'; ?>
-                    <?php if (matri_column_exists($conn, $table, 'age')) echo '<th>Age</th>'; ?>
-                    <?php if (matri_column_exists($conn, $table, 'education')) echo '<th>Education</th>'; ?>
-                    <?php if (matri_column_exists($conn, $table, 'occupation')) echo '<th>Occupation</th>'; ?>
-                    <?php if (matri_column_exists($conn, $table, 'city')) echo '<th>City</th>'; ?>
                     <?php if (matri_column_exists($conn, $table, 'district')) echo '<th>District</th>'; ?>
                     <?php if (matri_column_exists($conn, $table, 'village_rajasthan')) echo '<th>Village Rajasthan</th>'; ?>
                     <?php if (matri_column_exists($conn, $table, 'village')) echo '<th>Village</th>'; ?>
                     <?php if (matri_column_exists($conn, $table, 'village_name')) echo '<th>Village Name</th>'; ?>
-                    <?php if (!empty($show_payment_cols)) echo '<th>Plan</th><th>Transaction ID</th><th>Payment</th>'; ?>
                     <?php if (matri_column_exists($conn, $table, 'verification_status')) echo '<th>Verification</th>'; ?>
                     <?php if (matri_column_exists($conn, $table, 'verified')) echo '<th>Verified</th>'; ?>
                     <?php if (matri_column_exists($conn, $table, 'status')) echo '<th>Status</th>'; ?>
@@ -1111,10 +909,9 @@ $rejected_profiles = matri_column_exists($conn, $table, 'verification_status') ?
                         <?php $vs = $r['verification_status'] ?? 'pending'; ?>
                         <tr>
                             <td><?= e($r['id'] ?? '') ?></td>
-                            <?php if (matri_column_exists($conn, $table, 'profile_photo') || matri_column_exists($conn, $table, 'photo')): ?>
+                            <?php if (matri_column_exists($conn, $table, 'profile_photo')): ?>
                             <td>
-                                <?php $row_photo = $r['profile_photo'] ?? ($r['photo'] ?? ''); ?>
-                                <img src="<?= e(matri_profile_img_src($row_photo, $profile_photo_url_dir, $default_profile_img)) ?>" class="matri-profile-thumb" alt="Profile">
+                                <img src="<?= e(matri_profile_img_src($r['profile_photo'] ?? '', $profile_photo_url_dir, $default_profile_img)) ?>" class="matri-profile-thumb" alt="Profile">
                             </td>
                             <?php endif; ?>
                             <?php if (matri_column_exists($conn, $table, 'full_name')) echo '<td>' . e($r['full_name'] ?? '') . '</td>'; ?>
@@ -1122,20 +919,10 @@ $rejected_profiles = matri_column_exists($conn, $table, 'verification_status') ?
                             <?php if (matri_column_exists($conn, $table, 'gender')) echo '<td>' . e($r['gender'] ?? '') . '</td>'; ?>
                             <?php if (matri_column_exists($conn, $table, 'mobile')) echo '<td>' . e($r['mobile'] ?? '') . '</td>'; ?>
                             <?php if (matri_column_exists($conn, $table, 'gotra')) echo '<td>' . e($r['gotra'] ?? '') . '</td>'; ?>
-                            <?php if (matri_column_exists($conn, $table, 'age')) echo '<td>' . e($r['age'] ?? '') . '</td>'; ?>
-                            <?php if (matri_column_exists($conn, $table, 'education')) echo '<td>' . e($r['education'] ?? '') . '</td>'; ?>
-                            <?php if (matri_column_exists($conn, $table, 'occupation')) echo '<td>' . e($r['occupation'] ?? '') . '</td>'; ?>
-                            <?php if (matri_column_exists($conn, $table, 'city')) echo '<td>' . e($r['city'] ?? '') . '</td>'; ?>
                             <?php if (matri_column_exists($conn, $table, 'district')) echo '<td>' . e($r['district'] ?? '') . '</td>'; ?>
                             <?php if (matri_column_exists($conn, $table, 'village_rajasthan')) echo '<td>' . e($r['village_rajasthan'] ?? '') . '</td>'; ?>
                             <?php if (matri_column_exists($conn, $table, 'village')) echo '<td>' . e($r['village'] ?? '') . '</td>'; ?>
                             <?php if (matri_column_exists($conn, $table, 'village_name')) echo '<td>' . e($r['village_name'] ?? '') . '</td>'; ?>
-
-                            <?php if (!empty($show_payment_cols)): ?>
-                            <td><?= e($r['latest_plan_name'] ?? '-') ?></td>
-                            <td><b><?= e($r['latest_transaction_id'] ?? '-') ?></b></td>
-                            <td><?= e($r['latest_payment_status'] ?? '-') ?></td>
-                            <?php endif; ?>
 
                             <?php if (matri_column_exists($conn, $table, 'verification_status')): ?>
                             <td>
@@ -1161,9 +948,18 @@ $rejected_profiles = matri_column_exists($conn, $table, 'verification_status') ?
 
                             <td><div class="matri-action-box">
                                 <?php if (matri_column_exists($conn, $table, 'verification_status')): ?>
-                                    <a class="btn btn-sm btn-success mb-1" href="?action=approve&id=<?= (int)$r['id'] ?>">Approve</a>
+
                                     <a class="btn btn-sm btn-warning mb-1" href="?action=pending&id=<?= (int)$r['id'] ?>">Pending</a>
-                                    <a class="btn btn-sm btn-danger mb-1" onclick="return confirm('Reject this profile?')" href="?action=reject&id=<?= (int)$r['id'] ?>">Reject</a>
+
+                                    <?php if (function_exists('isVillageSurveyor') && isVillageSurveyor()): ?>
+                                        <a class="btn btn-sm btn-success mb-1" href="?action=approve&id=<?= (int)$r['id'] ?>">Approve</a>
+                                    <?php else: ?>
+                                        <a class="btn btn-sm btn-success mb-1" href="?action=village_verify&id=<?= (int)$r['id'] ?>">Village Verify</a>
+                                        <a class="btn btn-sm btn-primary mb-1" href="?action=approve&id=<?= (int)$r['id'] ?>">Final Approve</a>
+                                    <?php endif; ?>
+
+                                    <a class="btn btn-sm btn-info mb-1" href="?action=correction&id=<?= (int)$r['id'] ?>">Correction</a>
+                                    <a class="btn btn-sm btn-dark mb-1" onclick="return confirm('Reject this profile?')" href="?action=reject&id=<?= (int)$r['id'] ?>">Reject</a>
                                 <?php endif; ?>
 
                                 <a class="btn btn-sm btn-warning mb-1" href="?edit=<?= (int)$r['id'] ?>">Edit</a>
@@ -1173,49 +969,11 @@ $rejected_profiles = matri_column_exists($conn, $table, 'verification_status') ?
                         </tr>
                     <?php endwhile; ?>
                 <?php else: ?>
-                    <tr><td colspan="20">No matrimonial record found</td></tr>
+                    <tr><td colspan="15">No matrimonial record found</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>
     </div>
-
-    <?php if ($list_total_profiles > 0): ?>
-        <div class="matri-page-info">
-            Page <?= $page ?> of <?= $total_pages ?> | Total <?= $list_total_profiles ?> Profiles
-        </div>
-    <?php endif; ?>
-
-    <?php if ($total_pages > 1): ?>
-        <?php
-            $pagination_params = $_GET;
-            unset($pagination_params['page'], $pagination_params['action'], $pagination_params['id'], $pagination_params['delete'], $pagination_params['edit']);
-        ?>
-        <div class="matri-pagination">
-            <?php if ($page > 1): ?>
-                <?php
-                    $pagination_params['page'] = $page - 1;
-                    $prev_link = '?' . http_build_query($pagination_params);
-                ?>
-                <a class="matri-page-btn" href="<?= e($prev_link) ?>">Previous</a>
-            <?php endif; ?>
-
-            <?php for ($i = 1; $i <= $total_pages; $i++): ?>
-                <?php
-                    $pagination_params['page'] = $i;
-                    $page_link = '?' . http_build_query($pagination_params);
-                ?>
-                <a class="matri-page-btn <?= ($i == $page) ? 'active' : '' ?>" href="<?= e($page_link) ?>"><?= $i ?></a>
-            <?php endfor; ?>
-
-            <?php if ($page < $total_pages): ?>
-                <?php
-                    $pagination_params['page'] = $page + 1;
-                    $next_link = '?' . http_build_query($pagination_params);
-                ?>
-                <a class="matri-page-btn" href="<?= e($next_link) ?>">Next</a>
-            <?php endif; ?>
-        </div>
-    <?php endif; ?>
 </div>
 
 <?php include 'includes/footer.php'; ?>

@@ -1,265 +1,387 @@
+<?php
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
+/* Database connection */
+$conn = mysqli_connect("127.0.0.1", "root", "", "vjm_db", 3307);
+
+if (!$conn) {
+    die("Database connection failed: " . mysqli_connect_error());
+}
+
+/* Safe output function */
+function e($value) {
+    return htmlspecialchars($value ?? '', ENT_QUOTES, 'UTF-8');
+}
+
+/* Role ke hisab se redirect page */
+function roleRedirect($role) {
+    $redirects = [
+        'super_admin'         => 'dashboard.php',
+        'hostel_admin'        => 'hostel-booking.php',
+        'matrimonial_admin'   => 'matrimonial.php',
+        'ebook_admin'         => 'ebook.php',
+        'gallery_admin'       => 'gallery.php',
+        'temple_admin'        => 'temple.php',
+        'address_admin'       => 'address-book.php',
+        'village_surveyor'    => 'village-survey.php'
+    ];
+
+    return $redirects[$role] ?? '';
+}
+
+$error = "";
+
+/* अगर पहले से login है तो role के हिसाब से redirect */
+if (!empty($_SESSION['admin_logged_in']) && !empty($_SESSION['admin_id']) && !empty($_SESSION['admin_role'])) {
+    $redirect_page = roleRedirect($_SESSION['admin_role']);
+
+    if ($redirect_page != "") {
+        header("Location: " . $redirect_page);
+        exit;
+    }
+
+    session_unset();
+    session_destroy();
+}
+
+/* Roles table check/create */
+$roles_table = mysqli_query($conn, "SHOW TABLES LIKE 'roles'");
+
+if (!$roles_table || mysqli_num_rows($roles_table) == 0) {
+    mysqli_query($conn, "
+        CREATE TABLE roles (
+            id INT(11) NOT NULL AUTO_INCREMENT,
+            role_name VARCHAR(100) NOT NULL,
+            role_key VARCHAR(100) NOT NULL UNIQUE,
+            status ENUM('active','inactive') NOT NULL DEFAULT 'active',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ");
+}
+
+/* Default roles insert/update */
+mysqli_query($conn, "
+    INSERT INTO roles (role_name, role_key, status) VALUES
+    ('Super Admin', 'super_admin', 'active'),
+    ('Hostel Admin', 'hostel_admin', 'active'),
+    ('Matrimonial Admin', 'matrimonial_admin', 'active'),
+    ('eBook Admin', 'ebook_admin', 'active'),
+    ('Gallery Admin', 'gallery_admin', 'active'),
+    ('Temple Admin', 'temple_admin', 'active'),
+    ('Address Book Admin', 'address_admin', 'active'),
+    ('Village Surveyor', 'village_surveyor', 'active')
+    ON DUPLICATE KEY UPDATE role_name = VALUES(role_name), status = VALUES(status)
+");
+
+/* Active roles dropdown ke liye */
+$roles = mysqli_query($conn, "SELECT * FROM roles WHERE status='active' ORDER BY role_name ASC");
+
+/* Login process only after form submit */
+if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['login'])) {
+
+    $username = trim($_POST['username'] ?? '');
+    $password = trim($_POST['password'] ?? '');
+    $role     = trim($_POST['role'] ?? '');
+
+    if ($username == "" || $password == "" || $role == "") {
+        $error = "Please enter username, password and select role";
+    } else {
+
+        /* Selected role active hai ya nahi */
+        $role_stmt = $conn->prepare("SELECT id FROM roles WHERE role_key = ? AND status = 'active' LIMIT 1");
+        if (!$role_stmt) {
+            $error = "Role SQL prepare error: " . $conn->error;
+        } else {
+            $role_stmt->bind_param("s", $role);
+            $role_stmt->execute();
+            $role_result = $role_stmt->get_result();
+
+            if (!$role_result || $role_result->num_rows == 0) {
+                $error = "Selected role active nahi hai";
+            }
+            $role_stmt->close();
+        }
+
+        if ($error == "") {
+            /* Username में name / mobile / email तीनों से login */
+            $sql = "SELECT id, name, mobile, email, password, role, status 
+                    FROM users 
+                    WHERE (name = ? OR mobile = ? OR email = ?) 
+                    AND role = ? 
+                    LIMIT 1";
+
+            $stmt = $conn->prepare($sql);
+
+            if (!$stmt) {
+                $error = "SQL prepare error: " . $conn->error;
+            } else {
+                $stmt->bind_param("ssss", $username, $username, $username, $role);
+                $stmt->execute();
+                $result = $stmt->get_result();
+
+                if ($result && $result->num_rows > 0) {
+
+                    $user = $result->fetch_assoc();
+                    $db_password = $user['password'] ?? '';
+                    $user_status = (int)($user['status'] ?? 0);
+
+                    if ($user_status !== 1) {
+                        $error = "Your account inactive hai. Admin se contact kare.";
+                    } elseif (password_verify($password, $db_password) || $password === $db_password) {
+
+                        $redirect_page = roleRedirect($user['role']);
+
+                        if ($redirect_page == "") {
+                            $error = "Invalid role permission";
+                        } else {
+                            session_regenerate_id(true);
+
+                            $_SESSION['admin_logged_in'] = true;
+                            $_SESSION['admin_id'] = $user['id'];
+                            $_SESSION['admin_name'] = $user['name'];
+                            $_SESSION['admin_role'] = $user['role'];
+
+                            header("Location: " . $redirect_page);
+                            exit;
+                        }
+
+                    } else {
+                        $error = "Wrong password";
+                    }
+
+                } else {
+                    $error = "Wrong username, password or role";
+                }
+
+                $stmt->close();
+            }
+        }
+    }
+
+    /* Login ke baad roles query dobara */
+    $roles = mysqli_query($conn, "SELECT * FROM roles WHERE status='active' ORDER BY role_name ASC");
+}
+?>
 <!DOCTYPE html>
 <html lang="hi">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <link rel="stylesheet" href="css/style.css">
-  <link rel="stylesheet" href="/vishwakarma-jagruti-manch/css/header.css?v=50">
-  
-  <title>Vishwakarma Jagruti Manch</title>
+    <meta charset="UTF-8">
+    <title>VJM Admin Login</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        * {
+            box-sizing: border-box;
+        }
 
-  <style>
-    /* INDEX PAGE OLD CSS CONFLICT FIX */
-    .vj-header,
-    .vj-header * {
-      box-sizing: border-box;
-    }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: Arial, sans-serif;
+            background: radial-gradient(circle at top, #3b0010, #070000 70%);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: #fff;
+            padding: 15px;
+        }
 
-    .vj-header .vj-navbar {
-      display: block !important;
-      width: calc(100% - 40px) !important;
-      margin: 0 auto !important;
-      padding: 0 !important;
-      min-height: 98px !important;
-      overflow: hidden !important;
-    }
+        .card-dark {
+            width: 100%;
+            max-width: 520px;
+            background: #260006;
+            border: 1px solid #ff9800;
+            border-radius: 22px;
+            padding: 38px 36px;
+            box-shadow: 0 25px 70px rgba(0,0,0,.45);
+        }
 
-    .vj-header .vj-navbar .vj-menu {
-      width: 100% !important;
-      min-height: 98px !important;
-      margin: 0 !important;
-      padding: 0 !important;
-      list-style: none !important;
-      display: grid !important;
-      grid-template-columns: repeat(9, minmax(0, 1fr)) !important;
-      gap: 0 !important;
-      background: transparent !important;
-    }
+        .page-title {
+            margin: 0 0 30px;
+            color: #ffad3b;
+            font-size: 38px;
+            font-weight: 800;
+            text-align: center;
+        }
 
-    .vj-header .vj-navbar .vj-menu li {
-      width: 100% !important;
-      min-width: 0 !important;
-      margin: 0 !important;
-      padding: 0 !important;
-      list-style: none !important;
-      display: block !important;
-    }
+        .alert {
+            padding: 17px 20px;
+            border-radius: 7px;
+            margin-bottom: 22px;
+            font-size: 18px;
+            line-height: 1.5;
+        }
 
-    .vj-header .vj-navbar .vj-menu li a {
-      width: 100% !important;
-      height: 98px !important;
-      margin: 0 !important;
-      padding: 12px 8px !important;
-      float: none !important;
-      display: flex !important;
-      flex-direction: column !important;
-      align-items: center !important;
-      justify-content: center !important;
-      text-align: center !important;
-      gap: 0 !important;
-    }
+        .alert-danger {
+            background: #f8d0d5;
+            color: #79000b;
+        }
 
-    .vj-header .vj-navbar .vj-menu li a i {
-      display: block !important;
-      margin: 0 0 8px 0 !important;
-    }
+        .form-group {
+            margin-bottom: 20px;
+        }
 
-    @media (max-width: 900px) {
-      .vj-header .vj-navbar {
-        overflow: visible !important;
-      }
+        label {
+            display: block;
+            margin-bottom: 9px;
+            font-size: 20px;
+            font-weight: bold;
+        }
 
-      .vj-header .vj-navbar .vj-menu {
-        display: none !important;
-        grid-template-columns: 1fr !important;
-      }
+        input,
+        select {
+            width: 100%;
+            padding: 16px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,.22);
+            background: #fffaf3;
+            color: #fff;
+            font-size: 18px;
+            outline: none;
+        }
 
-      .vj-header .vj-navbar #vj-menu-toggle:checked ~ .vj-menu {
-        display: grid !important;
-      }
+        select {
+            cursor: pointer;
+        }
 
-      .vj-header .vj-navbar .vj-menu li a {
-        height: 75px !important;
-        flex-direction: row !important;
-        justify-content: flex-start !important;
-        text-align: left !important;
-        gap: 12px !important;
-      }
+        select option {
+            background: #101827;
+            color: #fff;
+        }
 
-      .vj-header .vj-navbar .vj-menu li a i {
-        margin: 0 !important;
-      }
-    }
-  </style>
+        input:focus,
+        select:focus {
+            border-color: #ff9800;
+            box-shadow: 0 0 0 3px rgba(255,152,0,.18);
+        }
 
+        .login-btn {
+            width: 100%;
+            border: none;
+            padding: 17px;
+            border-radius: 11px;
+            background: linear-gradient(135deg, #ffc328, #ff8a00);
+            color: #fff;
+            font-size: 19px;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 2px;
+        }
+
+        .login-btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .forgot {
+            text-align: center;
+            margin-top: 23px;
+        }
+
+        .forgot a {
+            color: #ffad3b;
+            text-decoration: none;
+            font-size: 20px;
+        }
+
+        .forgot a:hover {
+            text-decoration: underline;
+        }
+
+        @media (max-width: 550px) {
+            .card-dark {
+                padding: 28px 22px;
+            }
+
+            .page-title {
+                font-size: 30px;
+            }
+
+            label,
+            .forgot a {
+                font-size: 17px;
+            }
+
+            input,
+            select {
+                font-size: 16px;
+                padding: 14px;
+            }
+        }
+    </style>
+    <link rel="stylesheet" href="css/style.css?v=10">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 </head>
-
 <body>
-  
-<?php include 'header.php'; ?>
-<!-- Popup Start -->
-<div class="popup-overlay" id="popupAd">
-  <div class="popup-box">
-    <button class="close-btn" onclick="closePopup()">×</button>
-    <img src="images/amrti-popup.jpeg" alt="Advertisement Popup">
-  </div>
+
+<div class="card-dark">
+
+    <h2 class="page-title">VJM Admin Login</h2>
+
+    <?php if ($error != "") { ?>
+        <div class="alert alert-danger">
+            <?= e($error); ?>
+        </div>
+    <?php } ?>
+
+    <form method="POST" action="">
+
+        <div class="form-group">
+            <label>User Role</label>
+
+            <select name="role" required>
+                <option value="">Select Role</option>
+
+                <?php
+                if ($roles && mysqli_num_rows($roles) > 0) {
+                    while ($roleRow = mysqli_fetch_assoc($roles)) {
+                        $selected = "";
+                        if (isset($_POST['role']) && $_POST['role'] == $roleRow['role_key']) {
+                            $selected = "selected";
+                        }
+                        ?>
+                        <option value="<?= e($roleRow['role_key']); ?>" <?= $selected; ?>>
+                            <?= e($roleRow['role_name']); ?>
+                        </option>
+                        <?php
+                    }
+                }
+                ?>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label>Username</label>
+            <input 
+                type="text" 
+                name="username" 
+                placeholder="Enter name, mobile or email"
+                value="<?= e($_POST['username'] ?? ''); ?>"
+                required
+            >
+        </div>
+
+        <div class="form-group">
+            <label>Password</label>
+            <input 
+                type="password" 
+                name="password" 
+                placeholder="Enter password"
+                required
+            >
+        </div>
+
+        <button type="submit" name="login" class="login-btn">Login</button>
+
+    </form>
+
+    <div class="forgot">
+        <a href="forgot-password.php">Forgot Password?</a>
+    </div>
+
 </div>
-<!-- Popup End --><section class="hero">
 
-    <div class="hero-content">
-        <span class="welcome">Welcome to</span>
-
-        <h1>
-            Vishwakarma<br>       
-           <span>Jagruti Manch</span>
-        </h1>
-
-        <p>
-            Connecting Vishwakarma community
-            for a better tomorrow.
-        </p>
-    </div>
-
-    <div class="quote-box">
-        हमारा संगठन <br>
-        हमारी पहचान <br>
-        हमारा समाज <br>
-        हमारा अभिमान
-    </div>
-
-</section>
-  <section class="stats">
-    <div class="stat"><i class="fa-solid fa-users"></i><h3>50K+</h3><p>Registered Members</p></div>
-    <div class="stat"><i class="fa-solid fa-gopuram"></i><h3>1000+</h3><p>Temples</p></div>
-    <div class="stat"><i class="fa-solid fa-book-open"></i><h3>5000+</h3><p>eBooks</p></div>
-    <div class="stat"><i class="fa-solid fa-bed"></i><h3>200+</h3><p>Hostels</p></div>
-    <div class="stat"><i class="fa-solid fa-users"></i><h3>1000+</h3><p>Matrimonial Profiles</p></div>
-    <div class="stat"><i class="fa-solid fa-shield-halved"></i><h3>25+</h3><p>Years of Trust</p></div>
-  </section>
-
-  <section class="cards">
-    <div class="card">
-      <img src="images/temple.jpeg" alt="">
-      <div class="icon-circle"><i class="fa-solid fa-gopuram"></i></div>
-      <h3>Temples Directory</h3>
-      <p>Find nearby Vishwakarma Temples</p>
-      <a href="temple.php"><button>View More →</button></a>
-    </div>
-
-    <div class="card">
-      <img src="images/couple.jpeg" alt="">
-      <div class="icon-circle"><i class="fa-solid fa-users"></i></div>
-      <h3>Matrimonial Services</h3>
-      <p>Find your perfect life partner within community</p>
-      <a href="matrimonial-entry.php"><button>View More →</button></a>
-    </div>
-
-    <div class="card">
-      <img src="images/ebook1.jpeg" alt="">
-      <div class="icon-circle"><i class="fa-solid fa-book-open"></i></div>
-      <h3>eBooks Library</h3>
-      <p>Read and download spiritual & technical books</p>
-      <a href="ebook.php"><button>View More →</button></a>
-    </div>
-
-    <div class="card">
-      <img src="images/hostal1.jpeg" alt="">
-      <div class="icon-circle"><i class="fa-solid fa-bed"></i></div>
-      <h3>Hostel Booking</h3>
-      <p>Book hostels & dharamshalas online easily.</p>
-      <a href="hostel-booking.php"><button>View More →</button></a>
-    </div>
-
-    <div class="card">
-      <img src="images/address.jpeg" alt="">
-      <div class="icon-circle"><i class="fa-solid fa-address-book"></i></div>
-      <h3>Address Book</h3>
-      <p>Connect with community members easily</p>
-      <a href="address-book.php"><button>View More →</button></a>
-    </div>
-
-    <div class="card">
-      <img src="images/gallery1.jpeg" alt="">
-      <div class="icon-circle"><i class="fa-solid fa-image"></i></div>
-      <h3>Photo Gallery</h3>
-      <p>See our community events & memories</p>
-      <a href="gallery.php"><button>View More →</button></a>
-    </div>
-  </section>
-
-  <footer>
-    <div class="footer-grid">
-      
-      <div>
-        <h3>About Us</h3>
-        <p>Vishwakarma Jagruti Manch is dedicated to the upliftment and development of the Vishwakarma community.</p>
-      </div>
-
-      <div>
-        <h3>Quick Links</h3>
-        <ul>
-          <li>Home</li>
-          <li>Temples</li>
-          <li>Matrimonial</li>
-          <li>eBooks</li>
-          <li>Gallery</li>
-        </ul>
-      </div>
-
-      <div>
-        <h3>Contact Info</h3>
-        <p><i class="fa-solid fa-location-dot"></i> Sirohi, Rajasthan, India</p>
-        <p><i class="fa-solid fa-phone"></i> 8097523298</p>
-        <p><i class="fa-solid fa-envelope"></i> info@vishwakarmajagrutimanch.com</p>
-        <p><i class="fa-solid fa-clock"></i> Mon - Sat: 09:00 AM - 06:00 PM</p>
-      </div>
-      <div>
-        <h3>Our Mission</h3>
-        <ul>
-          <li>To unite the strong, educated and united Vishwakarma community.</li>
-          <li>To connect, inspire and empower every member.</li>
-          <li>To promote Equality, Service, Sanskar and Prosperity.</li>
-        </ul>
-      </div>
-
-      <div>
-        <h3>Stay Connected</h3>
-        <div class="footer-social">
-          <i class="fa-brands fa-facebook-f"></i>
-          <i class="fa-brands fa-instagram"></i>
-          <i class="fa-brands fa-youtube"></i>
-          <i class="fa-brands fa-whatsapp"></i>
-          <i class="fa-brands fa-telegram"></i>
-          <i class="fa-brands fa-linkedin-in"></i>
-        </div>
-        <div class="member-box">
-          <h3>Total Members<br><span style="color:#ffc928">50,000+</span></h3>
-          <p>And Growing Stronger Every Day</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="bottom">
-      © 2026 Vishwakarma Jagruti Manch. All Rights Reserved.  
-      Designed with ❤️ for Vishwakarma Community
-    </div>
-  </footer>
-
-<script>
-  function closePopup() {
-    document.getElementById("popupAd").style.display = "none";
-  }
-
-  // page open hote hi popup show hoga
-  window.onload = function () {
-    document.getElementById("popupAd").style.display = "flex";
-  };
-
-  // agar 5 second baad auto close karna ho to niche wali line use karein
-  // setTimeout(closePopup, 5000);
-</script>
 </body>
 </html>

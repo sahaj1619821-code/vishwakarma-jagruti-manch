@@ -1,114 +1,153 @@
 <?php
-$conn = mysqli_connect("127.0.0.1", "root", "", "vjm_db", 3307);
+include 'auth.php';
+requireRole(['enquiry_admin']);
+include 'includes/header.php';
+include 'includes/sidebar.php';
 
-if (!$conn) {
-    die("Database connection failed: " . mysqli_connect_error());
+$table = 'enquires'; // database me table ka exact naam
+
+if (!table_exists($conn, $table)) {
+    echo '<div class="alert alert-danger">Table enquires database में नहीं है.</div>';
 }
 
-$msg = "";
-
-if ($_SERVER["REQUEST_METHOD"] == "POST") {
-
-    $name    = trim($_POST['name'] ?? '');
-    $mobile  = trim($_POST['mobile'] ?? '');
-    $email   = trim($_POST['email'] ?? '');
-    $subject = trim($_POST['subject'] ?? '');
-    $message = trim($_POST['message'] ?? '');
-
-    if ($name == "" || $mobile == "" || $message == "") {
-        $msg = "Name, Mobile और Message भरना जरूरी है";
-    } else {
-
-        $stmt = mysqli_prepare(
-            $conn,
-            "INSERT INTO enquires (name, mobile, email, subject, message) VALUES (?, ?, ?, ?, ?)"
-        );
-
-        mysqli_stmt_bind_param($stmt, "sssss", $name, $mobile, $email, $subject, $message);
-
-        if (mysqli_stmt_execute($stmt)) {
-            echo "<script>
-                alert('Enquiry successfully submit ho gayi');
-                window.location.href='enquiries.php';
-            </script>";
-            exit;
-        } else {
-            $msg = "Database Error: " . mysqli_error($conn);
-        }
+// Edit data get
+$edit = [];
+if (isset($_GET['edit']) && table_exists($conn, $table)) {
+    $id = (int)$_GET['edit'];
+    $res = $conn->query("SELECT * FROM `$table` WHERE id=$id");
+    if ($res && $res->num_rows > 0) {
+        $edit = $res->fetch_assoc();
     }
 }
+
+// Delete
+if (isset($_GET['delete']) && table_exists($conn, $table)) {
+    $id = (int)$_GET['delete'];
+    $conn->query("DELETE FROM `$table` WHERE id=$id");
+    redirect('enquiries.php');
+}
+
+// Insert / Update
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && table_exists($conn, $table)) {
+
+    $name = $conn->real_escape_string($_POST['name'] ?? '');
+    $mobile = $conn->real_escape_string($_POST['mobile'] ?? '');
+    $email = $conn->real_escape_string($_POST['email'] ?? '');
+    $subject = $conn->real_escape_string($_POST['subject'] ?? '');
+    $message = $conn->real_escape_string($_POST['message'] ?? '');
+
+    if (isset($_POST['id']) && $_POST['id'] != '') {
+        $id = (int)$_POST['id'];
+
+        $conn->query("UPDATE `$table` SET 
+            name='$name',
+            mobile='$mobile',
+            email='$email',
+            subject='$subject',
+            message='$message'
+            WHERE id=$id
+        ");
+    } else {
+        $conn->query("INSERT INTO `$table` 
+            (name, mobile, email, subject, message) 
+            VALUES 
+            ('$name', '$mobile', '$email', '$subject', '$message')
+        ");
+    }
+
+    redirect('enquiries.php');
+}
 ?>
-<!DOCTYPE html>
-<html lang="hi">
-<head>
-    <meta charset="UTF-8">
-    <title>Enquiries - Vishwakarma Jagruti Manch</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <!-- CSS -->
-    <link rel="stylesheet" href="css/enquiries.css?v=1">
+<h2 class="page-title">Enquiries</h2>
 
-    <!-- Font Awesome Icons -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<div class="card-dark mb-4">
+    <form method="post">
+        <input type="hidden" name="id" value="<?= $edit['id'] ?? '' ?>">
 
-</head>
-<body>
-<?php include 'header.php'; ?>
-<section class="enquiry-page">
+        <div class="row">
+            <div class="col-md-4">
+                <label>Name</label>
+                <input type="text" name="name" class="form-control mb-2"
+                       value="<?= htmlspecialchars($edit['name'] ?? '') ?>">
+            </div>
 
-    <div class="left-panel">
-        <div class="left-content">
-            <img src="images/logo.png" alt="Logo" class="main-logo">
+            <div class="col-md-4">
+                <label>Mobile</label>
+                <input type="text" name="mobile" class="form-control mb-2"
+                       value="<?= htmlspecialchars($edit['mobile'] ?? '') ?>">
+            </div>
 
-            <h1>Enquiries</h1>
-            <h2>Vishwakarma Jagruti Manch</h2>
+            <div class="col-md-4">
+                <label>Email</label>
+                <input type="email" name="email" class="form-control mb-2"
+                       value="<?= htmlspecialchars($edit['email'] ?? '') ?>">
+            </div>
 
-            <p>आपका सुझाव, समस्या या जानकारी हमें भेजें।</p>
-            <p>हम जल्द से जल्द आपसे संपर्क करेंगे।</p>
+            <div class="col-md-4">
+                <label>Subject</label>
+                <input type="text" name="subject" class="form-control mb-2"
+                       value="<?= htmlspecialchars($edit['subject'] ?? '') ?>">
+            </div>
+
+            <div class="col-md-12">
+                <label>Message</label>
+                <textarea name="message" class="form-control mb-2"><?= htmlspecialchars($edit['message'] ?? '') ?></textarea>
+            </div>
         </div>
+
+        <button class="btn btn-gold mt-2">Save</button>
+        <a href="enquiries.php" class="btn btn-secondary mt-2">Clear</a>
+    </form>
+</div>
+
+<div class="card-dark">
+    <div class="table-responsive">
+        <table class="table table-hover align-middle">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Mobile</th>
+                    <th>Email</th>
+                    <th>Subject</th>
+                    <th>Message</th>
+                    <th>Created At</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+
+            <tbody>
+                <?php
+                if (table_exists($conn, $table)) {
+                    $res = $conn->query("SELECT * FROM `$table` ORDER BY id DESC");
+
+                    if ($res && $res->num_rows > 0) {
+                        while ($r = $res->fetch_assoc()) {
+                ?>
+                            <tr>
+                                <td><?= htmlspecialchars($r['name'] ?? '') ?></td>
+                                <td><?= htmlspecialchars($r['mobile'] ?? '') ?></td>
+                                <td><?= htmlspecialchars($r['email'] ?? '') ?></td>
+                                <td><?= htmlspecialchars($r['subject'] ?? '') ?></td>
+                                <td><?= htmlspecialchars($r['message'] ?? '') ?></td>
+                                <td><?= htmlspecialchars($r['created_at'] ?? '') ?></td>
+                                <td>
+                                    <a class="btn btn-sm btn-warning" href="?edit=<?= $r['id'] ?>">Edit</a>
+                                    <a class="btn btn-sm btn-danger"
+                                       href="?delete=<?= $r['id'] ?>"
+                                       onclick="return confirm('Delete?')">Delete</a>
+                                </td>
+                            </tr>
+                <?php
+                        }
+                    } else {
+                        echo '<tr><td colspan="7">No enquiry found</td></tr>';
+                    }
+                }
+                ?>
+            </tbody>
+        </table>
     </div>
+</div>
 
-    <div class="right-panel">
-        <div class="enquiry-card">
-
-            <h3>Enquiry Form</h3>
-
-            <?php if (!empty($msg)) { ?>
-                <div class="msg-box"><?php echo $msg; ?></div>
-            <?php } ?>
-
-            <form method="POST" action="">
-
-                <div class="form-group">
-                    <input type="text" name="name" placeholder="Full Name" required>
-                </div>
-
-                <div class="form-group">
-                    <input type="text" name="mobile" placeholder="Mobile Number" required>
-                </div>
-
-                <div class="form-group">
-                    <input type="email" name="email" placeholder="Email Address">
-                </div>
-
-                <div class="form-group">
-                    <input type="text" name="subject" placeholder="Subject">
-                </div>
-
-                <div class="form-group">
-                    <textarea name="message" placeholder="Write your message..." required></textarea>
-                </div>
-
-                <button type="submit" class="submit-btn">
-                    <i class="fa-solid fa-paper-plane"></i> Submit Enquiry
-                </button>
-
-            </form>
-
-        </div>
-    </div>
-
-</section>
-
-</body>
-</html>
+<?php include 'includes/footer.php'; ?>

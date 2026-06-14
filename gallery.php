@@ -1,30 +1,61 @@
 <?php
 include 'auth.php';
+requireRole(['gallery_admin']);
+include 'includes/header.php';
+include 'includes/sidebar.php';
 
-$conn = mysqli_connect("localhost", "root", "", "vjm_db", 3307);
-if (!$conn) {
-    die("Database connection failed: " . mysqli_connect_error());
+/*
+    Admin Gallery Management
+    Database tables as per public gallery.php:
+    gallery: id, album_id, title, image, description, status, created_at
+    gallery_albums: id, album_name, description, cover_image, status, created_at
+
+    Important:
+    - Photo files upload folder: /uploads/gallery/
+    - Database me image ke liye sirf file name save hoga, jaise: download.jpg
+    - Purane records me agar uploads/gallery/download.jpg save hai to bhi image show hogi.
+*/
+
+if (!isset($conn) || !$conn) {
+    die("Database connection not found. includes/header.php me \$conn connection check karo.");
 }
-mysqli_set_charset($conn, "utf8mb4");
 
-function e($value) {
-    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+$conn->set_charset("utf8mb4");
+
+if (!function_exists('redirect')) {
+    function redirect($url) {
+        echo "<script>window.location.href='" . addslashes($url) . "';</script>";
+        exit;
+    }
 }
 
-function hasColumn($conn, $table, $column) {
-    $table  = mysqli_real_escape_string($conn, $table);
-    $column = mysqli_real_escape_string($conn, $column);
-    $q = mysqli_query($conn, "SHOW COLUMNS FROM `$table` LIKE '$column'");
-    return $q && mysqli_num_rows($q) > 0;
+function e($v) {
+    return htmlspecialchars((string)($v ?? ''), ENT_QUOTES, 'UTF-8');
+}
+
+function tableHasColumn($conn, $table, $column) {
+    $table  = $conn->real_escape_string($table);
+    $column = $conn->real_escape_string($column);
+    $q = $conn->query("SHOW COLUMNS FROM `$table` LIKE '$column'");
+    return $q && $q->num_rows > 0;
+}
+
+function cleanFileName($name) {
+    $name = basename((string)$name);
+    $ext  = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+    $base = pathinfo($name, PATHINFO_FILENAME);
+    $base = preg_replace('/[^A-Za-z0-9._-]/', '_', $base);
+    return time() . '_' . rand(1000, 9999) . '_' . $base . '.' . $ext;
 }
 
 /*
-   Image path helper:
-   - Gallery photos ko uploads/gallery/ se read karega.
-   - Purane records agar uploads/ me save hain to unko bhi read karega.
-   - Agar database me full relative path ho jaise uploads/gallery/photo.jpg, wo bhi chalega.
+    Admin page admin/gallery.php se chalti hai, isliye browser path me ../ lagta hai.
+    Ye helper old/new dono type DB value ko support karta hai:
+    - download.jpg
+    - uploads/gallery/download.jpg
+    - images/temple.jpg
 */
-function imgSrc($file, $default = 'images/gallery-default.jpg') {
+function adminImgSrc($file, $default = '../images/gallery-default.jpg') {
     $file = trim((string)$file);
     $file = str_replace('\\', '/', $file);
 
@@ -40,15 +71,15 @@ function imgSrc($file, $default = 'images/gallery-default.jpg') {
     $candidates = [];
 
     if (strpos($file, '/') !== false) {
-        $candidates[] = $file;
-        $candidates[] = 'uploads/gallery/' . $base;
-        $candidates[] = 'uploads/' . $base;
-        $candidates[] = 'images/' . $base;
+        $candidates[] = '../' . ltrim($file, '/');
+        $candidates[] = '../uploads/gallery/' . $base;
+        $candidates[] = '../uploads/' . $base;
+        $candidates[] = '../images/' . $base;
     } else {
-        $candidates[] = 'uploads/gallery/' . $file;
-        $candidates[] = 'uploads/' . $file;
-        $candidates[] = 'images/' . $file;
-        $candidates[] = $file;
+        $candidates[] = '../uploads/gallery/' . $file;
+        $candidates[] = '../uploads/' . $file;
+        $candidates[] = '../images/' . $file;
+        $candidates[] = '../' . $file;
     }
 
     foreach ($candidates as $path) {
@@ -60,12 +91,8 @@ function imgSrc($file, $default = 'images/gallery-default.jpg') {
     return $default;
 }
 
-/* Aapke database ke hisab se tables:
-   gallery: id, album_id, title, image, description, status, created_at
-   gallery_albums: id, album_name, description, cover_image, status, created_at
-   Is file me category column use nahi kiya gaya hai. */
-
-mysqli_query($conn, "
+/* Tables create / repair */
+$conn->query("
     CREATE TABLE IF NOT EXISTS gallery_albums (
         id INT AUTO_INCREMENT PRIMARY KEY,
         album_name VARCHAR(150) NOT NULL,
@@ -76,7 +103,7 @@ mysqli_query($conn, "
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 ");
 
-mysqli_query($conn, "
+$conn->query("
     CREATE TABLE IF NOT EXISTS gallery (
         id INT AUTO_INCREMENT PRIMARY KEY,
         album_id INT DEFAULT NULL,
@@ -88,351 +115,604 @@ mysqli_query($conn, "
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 ");
 
-/* Agar purani gallery table me required column missing ho to add kar de */
-if (!hasColumn($conn, 'gallery', 'album_id')) {
-    @mysqli_query($conn, "ALTER TABLE gallery ADD album_id INT DEFAULT NULL AFTER id");
+if (!tableHasColumn($conn, 'gallery', 'album_id')) {
+    @$conn->query("ALTER TABLE gallery ADD album_id INT DEFAULT NULL AFTER id");
 }
-if (!hasColumn($conn, 'gallery', 'description')) {
-    @mysqli_query($conn, "ALTER TABLE gallery ADD description TEXT DEFAULT NULL AFTER image");
+if (!tableHasColumn($conn, 'gallery', 'description')) {
+    @$conn->query("ALTER TABLE gallery ADD description TEXT DEFAULT NULL AFTER image");
 }
-if (!hasColumn($conn, 'gallery', 'status')) {
-    @mysqli_query($conn, "ALTER TABLE gallery ADD status ENUM('active','inactive') DEFAULT 'active' AFTER description");
+if (!tableHasColumn($conn, 'gallery', 'status')) {
+    @$conn->query("ALTER TABLE gallery ADD status ENUM('active','inactive') DEFAULT 'active' AFTER description");
 }
-if (!hasColumn($conn, 'gallery', 'created_at')) {
-    @mysqli_query($conn, "ALTER TABLE gallery ADD created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
+if (!tableHasColumn($conn, 'gallery', 'created_at')) {
+    @$conn->query("ALTER TABLE gallery ADD created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
 }
-if (!hasColumn($conn, 'gallery_albums', 'cover_image')) {
-    @mysqli_query($conn, "ALTER TABLE gallery_albums ADD cover_image VARCHAR(255) DEFAULT NULL AFTER description");
+if (!tableHasColumn($conn, 'gallery_albums', 'cover_image')) {
+    @$conn->query("ALTER TABLE gallery_albums ADD cover_image VARCHAR(255) DEFAULT NULL AFTER description");
 }
-if (!hasColumn($conn, 'gallery_albums', 'status')) {
-    @mysqli_query($conn, "ALTER TABLE gallery_albums ADD status ENUM('active','inactive') DEFAULT 'active' AFTER cover_image");
+if (!tableHasColumn($conn, 'gallery_albums', 'status')) {
+    @$conn->query("ALTER TABLE gallery_albums ADD status ENUM('active','inactive') DEFAULT 'active' AFTER cover_image");
 }
-if (!hasColumn($conn, 'gallery_albums', 'created_at')) {
-    @mysqli_query($conn, "ALTER TABLE gallery_albums ADD created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
-}
-
-/* Default albums first time */
-$album_count_q = mysqli_query($conn, "SELECT COUNT(*) AS total FROM gallery_albums");
-$album_count_r = $album_count_q ? mysqli_fetch_assoc($album_count_q) : ['total' => 0];
-if ((int)$album_count_r['total'] === 0) {
-    $defaults = [
-        ['Temples', 'Mandir photos and temple programs', 'images/temple.jpg'],
-        ['Events', 'Community events and functions', 'images/event.jpg'],
-        ['Community Programs', 'Social and community activities', 'images/community.jpg'],
-        ['Webinars & Seminars', 'Online meetings and seminars', 'images/webinar.jpg'],
-        ['Religious Activities', 'Religious activities and celebrations', 'images/religious.jpg']
-    ];
-    $stmt = mysqli_prepare($conn, "INSERT INTO gallery_albums (album_name, description, cover_image) VALUES (?, ?, ?)");
-    foreach ($defaults as $d) {
-        mysqli_stmt_bind_param($stmt, "sss", $d[0], $d[1], $d[2]);
-        mysqli_stmt_execute($stmt);
-    }
-    mysqli_stmt_close($stmt);
+if (!tableHasColumn($conn, 'gallery_albums', 'created_at')) {
+    @$conn->query("ALTER TABLE gallery_albums ADD created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
 }
 
-$message = "";
-$message_type = "success";
+$upload_dir = __DIR__ . '/../uploads/gallery/';
+if (!is_dir($upload_dir)) {
+    mkdir($upload_dir, 0777, true);
+}
 
-/* Add New Album */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add_album') {
-    $album_name  = trim($_POST['album_name'] ?? '');
-    $description = trim($_POST['description'] ?? '');
-    $cover_image = trim($_POST['cover_image'] ?? '');
-    if ($cover_image === '') {
-        $cover_image = 'images/gallery-default.jpg';
-    }
+$allowed_ext = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+$msg = '';
+$msg_type = 'success';
+
+/* Album Save */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_album'])) {
+    $id = (int)($_POST['album_id'] ?? 0);
+    $album_name = trim($_POST['album_name'] ?? '');
+    $description = trim($_POST['album_description'] ?? '');
+    $status = ($_POST['album_status'] ?? 'active') === 'inactive' ? 'inactive' : 'active';
+    $cover_image = trim($_POST['old_cover'] ?? '');
 
     if ($album_name === '') {
-        $message = "Album name bharna जरूरी है.";
-        $message_type = "error";
+        $msg = 'Album name bharna जरूरी है.';
+        $msg_type = 'danger';
     } else {
-        $stmt = mysqli_prepare($conn, "INSERT INTO gallery_albums (album_name, description, cover_image) VALUES (?, ?, ?)");
-        mysqli_stmt_bind_param($stmt, "sss", $album_name, $description, $cover_image);
-        if (mysqli_stmt_execute($stmt)) {
-            $message = "New album successfully add ho gaya.";
-        } else {
-            $message = "Album add nahi hua: " . mysqli_error($conn);
-            $message_type = "error";
+        if (!empty($_FILES['cover_image']['name']) && $_FILES['cover_image']['error'] === UPLOAD_ERR_OK) {
+            $ext = strtolower(pathinfo($_FILES['cover_image']['name'], PATHINFO_EXTENSION));
+
+            if (in_array($ext, $allowed_ext)) {
+                $file = cleanFileName($_FILES['cover_image']['name']);
+
+                if (move_uploaded_file($_FILES['cover_image']['tmp_name'], $upload_dir . $file)) {
+                    // Public gallery.php filename ko uploads/gallery/ se read kar lega.
+                    $cover_image = $file;
+                }
+            }
         }
-        mysqli_stmt_close($stmt);
+
+        if ($id > 0) {
+            $stmt = $conn->prepare("UPDATE gallery_albums SET album_name=?, description=?, cover_image=?, status=? WHERE id=?");
+            $stmt->bind_param("ssssi", $album_name, $description, $cover_image, $status, $id);
+        } else {
+            $stmt = $conn->prepare("INSERT INTO gallery_albums (album_name, description, cover_image, status) VALUES (?, ?, ?, ?)");
+            $stmt->bind_param("ssss", $album_name, $description, $cover_image, $status);
+        }
+
+        if ($stmt->execute()) {
+            redirect('gallery.php?msg=album_saved');
+        } else {
+            $msg = 'Album save nahi hua: ' . $conn->error;
+            $msg_type = 'danger';
+        }
+        $stmt->close();
     }
 }
 
-/* Upload Photos */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'upload_photos') {
-    $title       = trim($_POST['title'] ?? '');
-    $album_id    = (int)($_POST['album_id'] ?? 0);
+/* Photo Save */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_photo'])) {
+    $id = (int)($_POST['photo_id'] ?? 0);
+    $album_id = (int)($_POST['album_id'] ?? 0);
+    $title = trim($_POST['title'] ?? '');
     $description = trim($_POST['description'] ?? '');
+    $status = ($_POST['status'] ?? 'active') === 'inactive' ? 'inactive' : 'active';
+    $image = trim($_POST['old_image'] ?? '');
 
-    if ($title === '' || $album_id <= 0 || empty($_FILES['photos']['name'][0])) {
-        $message = "Title, album aur photo select करना जरूरी है.";
-        $message_type = "error";
+    if ($album_id <= 0 || $title === '') {
+        $msg = 'Album aur photo title bharna जरूरी है.';
+        $msg_type = 'danger';
     } else {
-        $upload_dir = __DIR__ . '/uploads/gallery/';
-        if (!is_dir($upload_dir)) {
-            mkdir($upload_dir, 0777, true);
-        }
+        if (!empty($_FILES['image']['name']) && $_FILES['image']['error'] === UPLOAD_ERR_OK) {
+            $ext = strtolower(pathinfo($_FILES['image']['name'], PATHINFO_EXTENSION));
 
-        $allowed = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
-        $uploaded = 0;
+            if (in_array($ext, $allowed_ext)) {
+                $file = cleanFileName($_FILES['image']['name']);
 
-        foreach ($_FILES['photos']['name'] as $key => $original_name) {
-            if ($_FILES['photos']['error'][$key] !== UPLOAD_ERR_OK) {
-                continue;
-            }
-
-            $ext = strtolower(pathinfo($original_name, PATHINFO_EXTENSION));
-            if (!in_array($ext, $allowed)) {
-                continue;
-            }
-
-            $clean_name = preg_replace('/[^A-Za-z0-9._-]/', '_', pathinfo($original_name, PATHINFO_FILENAME));
-            $new_name = 'gallery_' . time() . '_' . rand(1000, 9999) . '_' . $clean_name . '.' . $ext;
-            $target = $upload_dir . $new_name;
-
-            if (move_uploaded_file($_FILES['photos']['tmp_name'][$key], $target)) {
-                $photo_title = $title;
-                if (count($_FILES['photos']['name']) > 1) {
-                    $photo_title = $title . ' ' . ($uploaded + 1);
+                if (move_uploaded_file($_FILES['image']['tmp_name'], $upload_dir . $file)) {
+                    // Public gallery.php filename ko uploads/gallery/ se read kar lega.
+                    $image = $file;
                 }
-                $stmt = mysqli_prepare($conn, "INSERT INTO gallery (album_id, title, image, description, status) VALUES (?, ?, ?, ?, 'active')");
-                mysqli_stmt_bind_param($stmt, "isss", $album_id, $photo_title, $new_name, $description);
-                if (mysqli_stmt_execute($stmt)) {
-                    $uploaded++;
-                }
-                mysqli_stmt_close($stmt);
             }
         }
 
-        if ($uploaded > 0) {
-            $message = $uploaded . " photo upload ho gayi.";
+        if ($id <= 0 && $image === '') {
+            $msg = 'Photo select karna जरूरी है.';
+            $msg_type = 'danger';
         } else {
-            $message = "Photo upload nahi hui. Sirf JPG, PNG, GIF, WEBP allow hai.";
-            $message_type = "error";
+            if ($id > 0) {
+                $stmt = $conn->prepare("UPDATE gallery SET album_id=?, title=?, image=?, description=?, status=? WHERE id=?");
+                $stmt->bind_param("issssi", $album_id, $title, $image, $description, $status, $id);
+            } else {
+                $stmt = $conn->prepare("INSERT INTO gallery (album_id, title, image, description, status) VALUES (?, ?, ?, ?, ?)");
+                $stmt->bind_param("issss", $album_id, $title, $image, $description, $status);
+            }
+
+            if ($stmt->execute()) {
+                redirect('gallery.php?msg=photo_saved');
+            } else {
+                $msg = 'Photo save nahi hui: ' . $conn->error;
+                $msg_type = 'danger';
+            }
+            $stmt->close();
         }
     }
 }
 
-$album_filter = (int)($_GET['album_id'] ?? 0);
-$where = "g.status='active'";
-if ($album_filter > 0) {
-    $where .= " AND g.album_id = " . $album_filter;
+/* Delete Photo */
+if (isset($_GET['delete_photo'])) {
+    $id = (int)$_GET['delete_photo'];
+    $stmt = $conn->prepare("DELETE FROM gallery WHERE id=?");
+    $stmt->bind_param("i", $id);
+    $stmt->execute();
+    $stmt->close();
+    redirect('gallery.php?msg=photo_deleted');
 }
 
-$result = mysqli_query($conn, "
-    SELECT g.*, a.album_name
-    FROM gallery g
-    LEFT JOIN gallery_albums a ON a.id = g.album_id
-    WHERE $where
-    ORDER BY g.id DESC
-");
+/* Delete Album */
+if (isset($_GET['delete_album'])) {
+    $id = (int)$_GET['delete_album'];
 
-$albums = mysqli_query($conn, "
+    $check = $conn->prepare("SELECT COUNT(*) AS total FROM gallery WHERE album_id=?");
+    $check->bind_param("i", $id);
+    $check->execute();
+    $total_photos_in_album = (int)($check->get_result()->fetch_assoc()['total'] ?? 0);
+    $check->close();
+
+    if ($total_photos_in_album > 0) {
+        $msg = 'Is album me photos hain. Pehle photos delete ya dusre album me move karo.';
+        $msg_type = 'danger';
+    } else {
+        $stmt = $conn->prepare("DELETE FROM gallery_albums WHERE id=?");
+        $stmt->bind_param("i", $id);
+        $stmt->execute();
+        $stmt->close();
+        redirect('gallery.php?msg=album_deleted');
+    }
+}
+
+/* Edit Fetch */
+$edit_photo = [];
+$edit_album = [];
+
+if (isset($_GET['edit_photo'])) {
+    $id = (int)$_GET['edit_photo'];
+    $stmt = $conn->prepare("SELECT * FROM gallery WHERE id=?");
+    $stmt->bind_param("i", $id);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    if ($res && $res->num_rows) {
+        $edit_photo = $res->fetch_assoc();
+    }
+    $stmt->close();
+}
+
+if (isset($_GET['edit_album'])) {
+    $id = (int)$_GET['edit_album'];
+    $stmt = $conn->prepare("SELECT * FROM gallery_albums WHERE id=?");
+    $stmt->bind_param("i", $id);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    if ($res && $res->num_rows) {
+        $edit_album = $res->fetch_assoc();
+    }
+    $stmt->close();
+}
+
+if (isset($_GET['msg'])) {
+    $map = [
+        'album_saved' => 'Album successfully save ho gaya.',
+        'photo_saved' => 'Photo successfully save ho gayi.',
+        'photo_deleted' => 'Photo delete ho gayi.',
+        'album_deleted' => 'Album delete ho gaya.'
+    ];
+    $msg = $map[$_GET['msg']] ?? '';
+    $msg_type = 'success';
+}
+
+/* Filters */
+$search = trim($_GET['search'] ?? '');
+$status_filter = trim($_GET['status_filter'] ?? '');
+$album_filter = trim($_GET['album_filter'] ?? '');
+
+$where = "WHERE 1";
+$params = [];
+$types = "";
+
+if ($search !== '') {
+    $where .= " AND (g.title LIKE ? OR g.description LIKE ? OR a.album_name LIKE ?)";
+    $like = '%' . $search . '%';
+    $params[] = $like;
+    $params[] = $like;
+    $params[] = $like;
+    $types .= "sss";
+}
+
+if ($status_filter !== '') {
+    $where .= " AND g.status = ?";
+    $params[] = $status_filter;
+    $types .= "s";
+}
+
+if ($album_filter !== '') {
+    $where .= " AND g.album_id = ?";
+    $params[] = (int)$album_filter;
+    $types .= "i";
+}
+
+$albums = $conn->query("
     SELECT a.*,
-           (SELECT COUNT(*) FROM gallery g WHERE g.album_id = a.id AND g.status='active') AS photo_total
+           (SELECT COUNT(*) FROM gallery g WHERE g.album_id = a.id) AS photo_total
     FROM gallery_albums a
-    WHERE a.status='active'
-    ORDER BY a.id ASC
+    ORDER BY a.id DESC
 ");
 
-$album_options = mysqli_query($conn, "SELECT id, album_name FROM gallery_albums WHERE status='active' ORDER BY album_name ASC");
-$album_options_for_modal = mysqli_query($conn, "SELECT id, album_name FROM gallery_albums WHERE status='active' ORDER BY album_name ASC");
+$albums2 = $conn->query("SELECT id, album_name FROM gallery_albums WHERE status='active' ORDER BY album_name ASC");
 
-$total_photos_q = mysqli_query($conn, "SELECT COUNT(*) AS total FROM gallery WHERE status='active'");
-$total_photos = (int)(mysqli_fetch_assoc($total_photos_q)['total'] ?? 0);
-
-$total_albums_q = mysqli_query($conn, "SELECT COUNT(*) AS total FROM gallery_albums WHERE status='active'");
-$total_albums = (int)(mysqli_fetch_assoc($total_albums_q)['total'] ?? 0);
-
-$total_categories = $total_albums;
-
-$album_counts = mysqli_query($conn, "
-    SELECT a.id, a.album_name, COUNT(g.id) AS total
-    FROM gallery_albums a
-    LEFT JOIN gallery g ON g.album_id = a.id AND g.status='active'
-    WHERE a.status='active'
-    GROUP BY a.id, a.album_name
-    ORDER BY total DESC, a.album_name ASC
-");
-
-$recent_uploads = mysqli_query($conn, "
+$photo_sql = "
     SELECT g.*, a.album_name
     FROM gallery g
-    LEFT JOIN gallery_albums a ON a.id = g.album_id
-    WHERE g.status='active'
+    LEFT JOIN gallery_albums a ON g.album_id = a.id
+    $where
     ORDER BY g.id DESC
-    LIMIT 5
-");
+";
 
-$selected_album_name = '';
-if ($album_filter > 0) {
-    $sel_q = mysqli_query($conn, "SELECT album_name FROM gallery_albums WHERE id=$album_filter LIMIT 1");
-    $sel_r = $sel_q ? mysqli_fetch_assoc($sel_q) : null;
-    $selected_album_name = $sel_r['album_name'] ?? '';
+$stmt = $conn->prepare($photo_sql);
+if ($types !== "") {
+    $stmt->bind_param($types, ...$params);
 }
+$stmt->execute();
+$photos = $stmt->get_result();
+
+$total_photos = (int)($conn->query("SELECT COUNT(*) AS total FROM gallery")->fetch_assoc()['total'] ?? 0);
+$total_albums = (int)($conn->query("SELECT COUNT(*) AS total FROM gallery_albums")->fetch_assoc()['total'] ?? 0);
+$active_photos = (int)($conn->query("SELECT COUNT(*) AS total FROM gallery WHERE status='active'")->fetch_assoc()['total'] ?? 0);
+$inactive_photos = (int)($conn->query("SELECT COUNT(*) AS total FROM gallery WHERE status='inactive'")->fetch_assoc()['total'] ?? 0);
 ?>
-<!DOCTYPE html>
-<html lang="hi">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gallery Management</title>
-    <link rel="stylesheet" href="css/gallery.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-</head>
-<body>
-<?php include 'header.php'; ?>
-<div class="dashboard">
-    <aside class="sidebar">
-        <h3>GALLERY MANAGEMENT</h3>
-        <a href="gallery.php"><i class="fa-solid fa-house"></i> Gallery Dashboard</a>
-        <a href="gallery.php#recentPhotos"><i class="fa-solid fa-image"></i> All Photos</a>
-        <a href="gallery.php#photoAlbums"><i class="fa-solid fa-folder"></i> Photo Albums</a>
-        <a href="#addAlbumModal" class="open-modal"><i class="fa-solid fa-plus"></i> Add New Album</a>
-        <a href="#uploadPhotoModal" class="open-modal"><i class="fa-solid fa-upload"></i> Add New Photos</a>
-        <a href="#albumCategories"><i class="fa-solid fa-tag"></i> Categories</a>
-        <a href="#"><i class="fa-solid fa-video"></i> Video Gallery</a>
 
-        <h3 id="albumCategories">ALBUM CATEGORIES</h3>
-        <p><a href="gallery.php">All Categories</a> <span><?= $total_photos; ?></span></p>
-        <?php if ($album_counts && mysqli_num_rows($album_counts) > 0) { ?>
-            <?php while ($cat = mysqli_fetch_assoc($album_counts)) { ?>
-                <p><a href="gallery.php?album_id=<?= (int)$cat['id']; ?>"><?= e($cat['album_name']); ?></a> <span><?= (int)$cat['total']; ?></span></p>
-            <?php } ?>
-        <?php } ?>
-    </aside>
+<style>
+.gallery-admin-wrap{
+    color:#fff;
+}
+.gallery-stats{
+    display:grid;
+    grid-template-columns:repeat(4,1fr);
+    gap:14px;
+    margin-bottom:20px;
+}
+.gallery-stat-card{
+    background:#1c0505;
+    border:1px solid #5b2200;
+    border-radius:12px;
+    padding:16px;
+}
+.gallery-stat-card span{
+    display:block;
+    color:#ffc328;
+    font-weight:700;
+    margin-bottom:6px;
+}
+.gallery-stat-card b{
+    font-size:24px;
+}
+.gallery-img{
+    width:74px;
+    height:74px;
+    object-fit:cover;
+    border-radius:9px;
+    border:1px solid #7b2d00;
+    background:#100;
+}
+.gallery-box{
+    background:#160303;
+    border:1px solid #4c1b00;
+    padding:18px;
+    border-radius:12px;
+    margin-bottom:20px;
+}
+.gallery-box h4{
+    color:#ffc328;
+    margin-bottom:14px;
+}
+.badge-active{background:#198754;}
+.badge-inactive{background:#dc3545;}
+.current-preview{
+    margin-top:8px;
+}
+.current-preview img{
+    width:90px;
+    height:70px;
+    object-fit:cover;
+    border-radius:8px;
+    border:1px solid #7b2d00;
+}
+.table td, .table th{
+    vertical-align:middle;
+}
+.action-btns{
+    display:flex;
+    gap:6px;
+    flex-wrap:wrap;
+}
+.btn-gold{
+    background:linear-gradient(145deg,#ffd36a,#f6a400);
+    color:#120202;
+    border:0;
+    font-weight:700;
+}
+@media(max-width:1000px){
+    .gallery-stats{
+        grid-template-columns:repeat(2,1fr);
+    }
+}
+@media(max-width:600px){
+    .gallery-stats{
+        grid-template-columns:1fr;
+    }
+}
+</style>
 
-    <main class="main-content">
-        <?php if ($message !== '') { ?>
-            <div class="alert <?= e($message_type); ?>"><?= e($message); ?></div>
-        <?php } ?>
+<div class="gallery-admin-wrap">
 
-        <div class="page-title">
-            <div>
-                <h2>Gallery</h2>
-                <p>Explore moments, events and activities of Vishwakarma Jagruti Manch.</p>
+<h2 class="page-title">Gallery Management</h2>
+
+<?php if ($msg !== ''): ?>
+    <div class="alert alert-<?= e($msg_type) ?>"><?= e($msg) ?></div>
+<?php endif; ?>
+
+<div class="gallery-stats">
+    <div class="gallery-stat-card">
+        <span>Total Photos</span>
+        <b><?= $total_photos ?></b>
+    </div>
+    <div class="gallery-stat-card">
+        <span>Active Photos</span>
+        <b><?= $active_photos ?></b>
+    </div>
+    <div class="gallery-stat-card">
+        <span>Inactive Photos</span>
+        <b><?= $inactive_photos ?></b>
+    </div>
+    <div class="gallery-stat-card">
+        <span>Total Albums</span>
+        <b><?= $total_albums ?></b>
+    </div>
+</div>
+
+<div class="gallery-box">
+    <h4><?= isset($edit_album['id']) ? 'Edit Album' : 'Add Album' ?></h4>
+
+    <form method="post" enctype="multipart/form-data">
+        <input type="hidden" name="album_id" value="<?= e($edit_album['id'] ?? '') ?>">
+        <input type="hidden" name="old_cover" value="<?= e($edit_album['cover_image'] ?? '') ?>">
+
+        <div class="row">
+            <div class="col-md-4">
+                <label>Album Name</label>
+                <input type="text" name="album_name" class="form-control mb-2" required value="<?= e($edit_album['album_name'] ?? '') ?>">
             </div>
-            <div class="page-actions">
-                <a href="#addAlbumModal" class="dark-btn open-modal"><i class="fa-solid fa-plus"></i> Add New Album</a>
-                <a href="#uploadPhotoModal" class="gold-btn open-modal"><i class="fa-solid fa-upload"></i> Upload Photos</a>
+
+            <div class="col-md-4">
+                <label>Cover Image</label>
+                <input type="file" name="cover_image" accept="image/*" class="form-control mb-2">
+                <?php if (!empty($edit_album['cover_image'])): ?>
+                    <div class="current-preview">
+                        <img src="<?= e(adminImgSrc($edit_album['cover_image'])) ?>" onerror="this.onerror=null;this.src='../images/gallery-default.jpg';">
+                    </div>
+                <?php endif; ?>
             </div>
-        </div>
 
-        <h3 id="photoAlbums">Photo Albums</h3>
-        <div class="album-grid">
-            <?php while ($album = mysqli_fetch_assoc($albums)) { ?>
-                <a class="album-card" href="gallery.php?album_id=<?= (int)$album['id']; ?>">
-                    <img src="<?= e(imgSrc($album['cover_image'], 'images/gallery-default.jpg')); ?>" onerror="this.onerror=null;this.src='images/gallery-default.jpg';" alt="<?= e($album['album_name']); ?>">
-                    <h4><?= e($album['album_name']); ?></h4>
-                    <p><?= (int)$album['photo_total']; ?> Photos • Album</p>
-                </a>
-            <?php } ?>
-        </div>
-
-        <div class="section-head" id="recentPhotos">
-            <h3>Recent Photos <?= $selected_album_name !== '' ? ' - ' . e($selected_album_name) : ''; ?></h3>
-            <form method="get">
-                <select name="album_id" onchange="this.form.submit()">
-                    <option value="">All Albums</option>
-                    <?php if ($album_options) { while ($opt = mysqli_fetch_assoc($album_options)) { ?>
-                        <option value="<?= (int)$opt['id']; ?>" <?= $album_filter === (int)$opt['id'] ? 'selected' : ''; ?>><?= e($opt['album_name']); ?></option>
-                    <?php }} ?>
+            <div class="col-md-4">
+                <label>Status</label>
+                <select name="album_status" class="form-select mb-2">
+                    <option value="active" <?= (($edit_album['status'] ?? 'active')=='active')?'selected':'' ?>>Active</option>
+                    <option value="inactive" <?= (($edit_album['status'] ?? '')=='inactive')?'selected':'' ?>>Inactive</option>
                 </select>
-            </form>
+            </div>
+
+            <div class="col-md-12">
+                <label>Description</label>
+                <textarea name="album_description" class="form-control mb-2" rows="3"><?= e($edit_album['description'] ?? '') ?></textarea>
+            </div>
         </div>
 
-        <div class="photo-grid">
-            <?php if ($result && mysqli_num_rows($result) > 0) { ?>
-                <?php while ($row = mysqli_fetch_assoc($result)) { ?>
-                    <div class="gallery-card">
-                        <img src="<?= e(imgSrc($row['image'], 'images/gallery-default.jpg')); ?>" onerror="this.onerror=null;this.src='images/gallery-default.jpg';" alt="<?= e($row['title'] ?: 'Gallery'); ?>">
-                        <div class="gallery-card-body">
-                            <h4><?= e($row['title']); ?></h4>
-                            <p><i class="fa-solid fa-folder"></i> <?= e($row['album_name'] ?: 'No Album'); ?></p>
-                        </div>
-                    </div>
-                <?php } ?>
-            <?php } else { ?>
-                <div class="empty-box">Abhi is album me photo available nahi hai.</div>
-            <?php } ?>
-        </div>
-    </main>
-
-    <aside class="right-panel">
-        <h3>QUICK STATS</h3>
-        <p><span><i class="fa-solid fa-image"></i> Total Photos</span> <b><?= $total_photos; ?></b></p>
-        <p><span><i class="fa-solid fa-folder"></i> Photo Albums</span> <b><?= $total_albums; ?></b></p>
-        <p><span><i class="fa-solid fa-tag"></i> Categories</span> <b><?= $total_categories; ?></b></p>
-        <p><span><i class="fa-solid fa-video"></i> Videos</span> <b>0</b></p>
-
-        <h3>RECENT UPLOADS</h3>
-        <?php if ($recent_uploads && mysqli_num_rows($recent_uploads) > 0) { ?>
-            <?php while ($up = mysqli_fetch_assoc($recent_uploads)) { ?>
-                <div class="upload">
-                    <img src="<?= e(imgSrc($up['image'], 'images/gallery-default.jpg')); ?>" onerror="this.onerror=null;this.src='images/gallery-default.jpg';" alt="Recent Upload">
-                    <div>
-                        <b><?= e($up['title']); ?></b>
-                        <small><?= e($up['album_name'] ?: 'No Album'); ?></small>
-                    </div>
-                </div>
-            <?php } ?>
-        <?php } else { ?>
-            <div class="upload empty-upload">No recent uploads</div>
-        <?php } ?>
-    </aside>
+        <button name="save_album" class="btn btn-gold">Save Album</button>
+        <a href="gallery.php" class="btn btn-secondary">Clear</a>
+    </form>
 </div>
 
-<div id="addAlbumModal" class="modal-box">
-    <div class="modal-content">
-        <a href="#" class="close-modal">&times;</a>
-        <h3><i class="fa-solid fa-folder-plus"></i> Add New Album</h3>
-        <form method="post">
-            <input type="hidden" name="action" value="add_album">
-            <label>Album Name</label>
-            <input type="text" name="album_name" placeholder="Example: Temple Opening Ceremony" required>
+<div class="gallery-box">
+    <h4><?= isset($edit_photo['id']) ? 'Edit Photo' : 'Add Photo' ?></h4>
 
-            <label>Cover Image Path</label>
-            <input type="text" name="cover_image" placeholder="images/temple.jpg या uploads/gallery/download.jpg">
+    <form method="post" enctype="multipart/form-data">
+        <input type="hidden" name="photo_id" value="<?= e($edit_photo['id'] ?? '') ?>">
+        <input type="hidden" name="old_image" value="<?= e($edit_photo['image'] ?? '') ?>">
 
-            <label>Description</label>
-            <textarea name="description" rows="3" placeholder="Album details"></textarea>
+        <div class="row">
+            <div class="col-md-4">
+                <label>Album</label>
+                <select name="album_id" class="form-select mb-2" required>
+                    <option value="">Select Album</option>
+                    <?php if ($albums2): while($a = $albums2->fetch_assoc()): ?>
+                        <option value="<?= (int)$a['id'] ?>" <?= ((int)($edit_photo['album_id'] ?? 0) === (int)$a['id']) ? 'selected' : '' ?>>
+                            <?= e($a['album_name']) ?>
+                        </option>
+                    <?php endwhile; endif; ?>
+                </select>
+            </div>
 
-            <button class="gold-btn" type="submit"><i class="fa-solid fa-save"></i> Save Album</button>
-        </form>
+            <div class="col-md-4">
+                <label>Photo Title</label>
+                <input type="text" name="title" class="form-control mb-2" required value="<?= e($edit_photo['title'] ?? '') ?>">
+            </div>
+
+            <div class="col-md-4">
+                <label>Image</label>
+                <input type="file" name="image" accept="image/*" class="form-control mb-2" <?= isset($edit_photo['id']) ? '' : 'required' ?>>
+                <?php if (!empty($edit_photo['image'])): ?>
+                    <div class="current-preview">
+                        <img src="<?= e(adminImgSrc($edit_photo['image'])) ?>" onerror="this.onerror=null;this.src='../images/gallery-default.jpg';">
+                    </div>
+                <?php endif; ?>
+            </div>
+
+            <div class="col-md-4">
+                <label>Status</label>
+                <select name="status" class="form-select mb-2">
+                    <option value="active" <?= (($edit_photo['status'] ?? 'active')=='active')?'selected':'' ?>>Active</option>
+                    <option value="inactive" <?= (($edit_photo['status'] ?? '')=='inactive')?'selected':'' ?>>Inactive</option>
+                </select>
+            </div>
+
+            <div class="col-md-12">
+                <label>Description</label>
+                <textarea name="description" class="form-control mb-2" rows="3"><?= e($edit_photo['description'] ?? '') ?></textarea>
+            </div>
+        </div>
+
+        <button name="save_photo" class="btn btn-gold">Save Photo</button>
+        <a href="gallery.php" class="btn btn-secondary">Clear</a>
+    </form>
+</div>
+
+<div class="gallery-box">
+    <h4>Search Photo</h4>
+
+    <form method="get">
+        <div class="row">
+            <div class="col-md-4">
+                <input type="text" name="search" class="form-control mb-2" placeholder="Title / Album / Description" value="<?= e($search) ?>">
+            </div>
+
+            <div class="col-md-3">
+                <select name="album_filter" class="form-select mb-2">
+                    <option value="">All Albums</option>
+                    <?php
+                    $album_filter_list = $conn->query("SELECT id, album_name FROM gallery_albums ORDER BY album_name ASC");
+                    if ($album_filter_list):
+                    while($af = $album_filter_list->fetch_assoc()):
+                    ?>
+                        <option value="<?= (int)$af['id'] ?>" <?= ((string)$album_filter === (string)$af['id']) ? 'selected' : '' ?>>
+                            <?= e($af['album_name']) ?>
+                        </option>
+                    <?php endwhile; endif; ?>
+                </select>
+            </div>
+
+            <div class="col-md-3">
+                <select name="status_filter" class="form-select mb-2">
+                    <option value="">All Status</option>
+                    <option value="active" <?= ($status_filter=='active')?'selected':'' ?>>Active</option>
+                    <option value="inactive" <?= ($status_filter=='inactive')?'selected':'' ?>>Inactive</option>
+                </select>
+            </div>
+
+            <div class="col-md-2">
+                <button class="btn btn-gold w-100">Search</button>
+            </div>
+        </div>
+    </form>
+</div>
+
+<div class="gallery-box">
+    <h4>Albums List</h4>
+
+    <div class="table-responsive">
+        <table class="table table-hover align-middle">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Cover</th>
+                    <th>Album Name</th>
+                    <th>Photos</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+            <?php if ($albums && $albums->num_rows > 0): ?>
+                <?php while($al = $albums->fetch_assoc()): ?>
+                    <tr>
+                        <td><?= (int)$al['id'] ?></td>
+                        <td>
+                            <img src="<?= e(adminImgSrc($al['cover_image'] ?? '')) ?>" class="gallery-img" onerror="this.onerror=null;this.src='../images/gallery-default.jpg';">
+                        </td>
+                        <td><?= e($al['album_name']) ?></td>
+                        <td><?= (int)($al['photo_total'] ?? 0) ?></td>
+                        <td>
+                            <span class="badge <?= ($al['status']=='active')?'bg-success':'bg-danger' ?>">
+                                <?= e($al['status']) ?>
+                            </span>
+                        </td>
+                        <td>
+                            <div class="action-btns">
+                                <a href="?edit_album=<?= (int)$al['id'] ?>" class="btn btn-sm btn-warning">Edit</a>
+                                <a href="?delete_album=<?= (int)$al['id'] ?>" onclick="return confirm('Delete album? Agar album me photos hain to delete nahi hoga.')" class="btn btn-sm btn-danger">Delete</a>
+                            </div>
+                        </td>
+                    </tr>
+                <?php endwhile; ?>
+            <?php else: ?>
+                <tr><td colspan="6">No album found</td></tr>
+            <?php endif; ?>
+            </tbody>
+        </table>
     </div>
 </div>
 
-<div id="uploadPhotoModal" class="modal-box">
-    <div class="modal-content">
-        <a href="#" class="close-modal">&times;</a>
-        <h3><i class="fa-solid fa-cloud-arrow-up"></i> Upload Photos</h3>
-        <form method="post" enctype="multipart/form-data">
-            <input type="hidden" name="action" value="upload_photos">
-            <label>Photo Title</label>
-            <input type="text" name="title" placeholder="Example: Community Function" required>
+<div class="gallery-box">
+    <h4>Photos List</h4>
 
-            <label>Album</label>
-            <select name="album_id" required>
-                <option value="">Select Album</option>
-                <?php if ($album_options_for_modal) { while ($opt = mysqli_fetch_assoc($album_options_for_modal)) { ?>
-                    <option value="<?= (int)$opt['id']; ?>"><?= e($opt['album_name']); ?></option>
-                <?php }} ?>
-            </select>
+    <div class="table-responsive">
+        <table class="table table-hover align-middle">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Photo</th>
+                    <th>Title</th>
+                    <th>Album</th>
+                    <th>Status</th>
+                    <th>Image DB Value</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
 
-            <label>Description</label>
-            <textarea name="description" rows="3" placeholder="Photo details"></textarea>
-
-            <label>Select Photos</label>
-            <input type="file" name="photos[]" accept="image/*" multiple required>
-
-            <button class="gold-btn" type="submit"><i class="fa-solid fa-upload"></i> Upload Now</button>
-        </form>
+            <tbody>
+            <?php if($photos && $photos->num_rows > 0): ?>
+                <?php while($p = $photos->fetch_assoc()): ?>
+                    <tr>
+                        <td><?= (int)$p['id'] ?></td>
+                        <td>
+                            <img src="<?= e(adminImgSrc($p['image'] ?? '')) ?>" class="gallery-img" onerror="this.onerror=null;this.src='../images/gallery-default.jpg';">
+                        </td>
+                        <td><?= e($p['title']) ?></td>
+                        <td><?= e($p['album_name'] ?: 'No Album') ?></td>
+                        <td>
+                            <span class="badge <?= ($p['status']=='active')?'bg-success':'bg-danger' ?>">
+                                <?= e($p['status']) ?>
+                            </span>
+                        </td>
+                        <td><small><?= e($p['image']) ?></small></td>
+                        <td>
+                            <div class="action-btns">
+                                <a href="?edit_photo=<?= (int)$p['id'] ?>" class="btn btn-sm btn-warning">Edit</a>
+                                <a href="?delete_photo=<?= (int)$p['id'] ?>" onclick="return confirm('Delete photo?')" class="btn btn-sm btn-danger">Delete</a>
+                            </div>
+                        </td>
+                    </tr>
+                <?php endwhile; ?>
+            <?php else: ?>
+                <tr><td colspan="7">No photo found</td></tr>
+            <?php endif; ?>
+            </tbody>
+        </table>
     </div>
 </div>
 
-<footer>
-    © 2026 Vishwakarma Jagruti Manch. All Rights Reserved.
-</footer>
+</div>
 
-</body>
-</html>
+<?php
+if (isset($stmt) && $stmt instanceof mysqli_stmt) {
+    $stmt->close();
+}
+include 'includes/footer.php';
+?>

@@ -1,390 +1,284 @@
 <?php
-// forgot-password.php
+session_start();
+
+$conn = mysqli_connect("127.0.0.1", "root", "", "vjm_db", 3307);
+
+if (!$conn) {
+    die("Database connection failed: " . mysqli_connect_error());
+}
+
+function e($value) {
+    return htmlspecialchars($value ?? '', ENT_QUOTES, 'UTF-8');
+}
+
+$message = "";
+$error = "";
+$step = 1;
+$found_user = null;
+
+if ($_SERVER["REQUEST_METHOD"] == "POST") {
+
+    if (isset($_POST['find_user'])) {
+
+        $mobile_email = trim($_POST['mobile_email'] ?? '');
+        $role = trim($_POST['role'] ?? '');
+
+        if ($mobile_email == "" || $role == "") {
+            $error = "Mobile/email aur role select kare";
+        } else {
+
+            $stmt = $conn->prepare("
+                SELECT id, name, mobile, email, role 
+                FROM users 
+                WHERE (mobile = ? OR email = ? OR name = ?) 
+                AND role = ? 
+                LIMIT 1
+            ");
+
+            $stmt->bind_param("ssss", $mobile_email, $mobile_email, $mobile_email, $role);
+            $stmt->execute();
+            $result = $stmt->get_result();
+
+            if ($result->num_rows == 0) {
+                $error = "User not found or role wrong";
+            } else {
+                $found_user = $result->fetch_assoc();
+                $step = 2;
+            }
+        }
+    }
+
+    if (isset($_POST['reset_password'])) {
+
+        $user_id = intval($_POST['user_id'] ?? 0);
+        $new_password = trim($_POST['new_password'] ?? '');
+        $confirm_password = trim($_POST['confirm_password'] ?? '');
+
+        if ($user_id <= 0 || $new_password == "" || $confirm_password == "") {
+            $error = "All fields are required";
+            $step = 2;
+        } elseif ($new_password != $confirm_password) {
+            $error = "New password and confirm password do not match";
+            $step = 2;
+        } elseif (strlen($new_password) < 6) {
+            $error = "Password minimum 6 characters ka hona chahiye";
+            $step = 2;
+        } else {
+
+            $hashedPassword = password_hash($new_password, PASSWORD_DEFAULT);
+
+            $stmt = $conn->prepare("UPDATE users SET password = ? WHERE id = ?");
+            $stmt->bind_param("si", $hashedPassword, $user_id);
+
+            if ($stmt->execute()) {
+                $message = "Password reset successfully. Ab login kare.";
+                $step = 1;
+            } else {
+                $error = "Password reset failed";
+                $step = 2;
+            }
+        }
+    }
+}
+
+/* Active roles */
+$roles = mysqli_query($conn, "SELECT * FROM roles WHERE status='active' ORDER BY role_name ASC");
 ?>
 <!DOCTYPE html>
-<html lang="en">
+<html lang="hi">
 <head>
     <meta charset="UTF-8">
+    <title>Forgot Password - VJM Admin</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Forgot Password - Vishwakarma Jagruti Manch</title>
-
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 
     <style>
         * {
-            margin: 0;
-            padding: 0;
             box-sizing: border-box;
         }
 
         body {
+            margin: 0;
+            min-height: 100vh;
             font-family: Arial, sans-serif;
-            min-height: 100vh;
-        }
-
-        .login-page {
-    width: 100%;
-    min-height: 100vh;
-    display: flex;
-    background: linear-gradient(
-        90deg,
-        rgba(20, 0, 3, 0.98),
-        rgba(35, 0, 5, 0.85)
-    );
-    overflow: hidden;
-}
-
-        .brand-side {
-            width: 58%;
-            min-height: 100vh;
+            background: radial-gradient(circle at top, #3b0010, #070000 70%);
+            color: #fff;
             display: flex;
             align-items: center;
             justify-content: center;
-            padding: 40px;
-            color: #fff;
+            padding: 18px;
         }
 
-        .brand-box {
-            max-width: 620px;
-            text-align: center;
-        }
-
-        .main-logo {
-            width: 95px;
-            height: 95px;
-            object-fit: contain;
-            border-radius: 50%;
-            background: #fff;
-            padding: 5px;
-            box-shadow: 0 0 25px rgba(255, 180, 70, 0.9);
-            margin-bottom: 22px;
-        }
-
-        .brand-box h1 {
-            font-size: 42px;
-            line-height: 1.2;
-            font-weight: 900;
-            letter-spacing: 1px;
-            color: #fff;
-            text-shadow: 0 3px 8px rgba(0,0,0,0.4);
-        }
-
-        .brand-box h1 span {
-            display: block;
-            color: #ffd23f;
-        }
-
-        .brand-box h3 {
-            margin-top: 14px;
-            font-size: 22px;
-            color: #ffe6a3;
-            font-weight: 700;
-        }
-
-        .welcome-text {
-            margin-top: 55px;
-            font-size: 20px;
-            font-weight: 700;
-        }
-
-        .small-text {
-            margin: 18px auto 0;
-            max-width: 500px;
-            font-size: 16px;
-            line-height: 1.6;
-            font-weight: 600;
-        }
-
-        .stats-box {
-            margin-top: 70px;
-            border: 1px solid rgba(255,255,255,0.45);
-            border-radius: 12px;
-            display: flex;
-            justify-content: space-between;
-            overflow: hidden;
-            backdrop-filter: blur(5px);
-        }
-
-        .stats-box div {
-            width: 33.33%;
-            padding: 18px 10px;
-            text-align: center;
-            border-right: 1px solid rgba(255,255,255,0.35);
-        }
-
-        .stats-box div:last-child {
-            border-right: none;
-        }
-
-        .stats-box i {
-            color: #ffdc4a;
-            font-size: 28px;
-            margin-bottom: 5px;
-        }
-
-        .stats-box h2 {
-            font-size: 24px;
-            color: #fff;
-        }
-
-        .stats-box p {
-            font-size: 13px;
-            font-weight: 600;
-        }
-
-       .form-side {
-    width: 58%;
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 5px 80px 35px 35px;
-}
-
-        .login-card {
+        .password-card {
             width: 100%;
-            max-width: 620px;
-            background: rgba(255,255,255,0.94);
-            padding: 48px 58px;
+            max-width: 520px;
+            background: #260006;
+            border: 1px solid #ff9800;
             border-radius: 22px;
-            box-shadow: 0 25px 60px rgba(0,0,0,0.35);
+            padding: 35px;
+            box-shadow: 0 25px 70px rgba(0,0,0,.45);
         }
 
-        .login-card h2 {
+        h2 {
+            margin: 0 0 25px;
+            color: #ffad3b;
             text-align: center;
-            font-family: Georgia, serif;
-            font-size: 38px;
-            color: #2f0101;
-            margin-bottom: 5px;
+            font-size: 34px;
         }
 
-        .sub-title {
-            text-align: center;
-            color: #5a1414;
-            margin-bottom: 35px;
-        }
-
-        .login-card label {
-            font-size: 14px;
-            color: #333;
+        label {
             display: block;
             margin-bottom: 8px;
+            font-weight: bold;
+            font-size: 17px;
         }
 
-        .input-box {
-            height: 56px;
-            border: 1px solid #ddd;
-            border-radius: 9px;
-            display: flex;
-            align-items: center;
-            padding: 0 16px;
-            margin-bottom: 24px;
-            background: #fff;
-        }
-
-        .input-box i {
-            color: #6c7280;
-            font-size: 18px;
-            margin-right: 14px;
-        }
-
-        .input-box input {
-            border: none;
+        input,
+        select {
+            width: 100%;
+            padding: 15px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,.25);
+            background: #fffaf3;
+            color: #fff;
+            font-size: 16px;
             outline: none;
-            width: 100%;
-            height: 100%;
-            font-size: 15px;
-            color: #333;
+            margin-bottom: 18px;
         }
 
-        .login-btn {
+        select option {
+            background: #101827;
+            color: #fff;
+        }
+
+        input:focus,
+        select:focus {
+            border-color: #ff9800;
+            box-shadow: 0 0 0 3px rgba(255,152,0,.18);
+        }
+
+        .btn {
             width: 100%;
-            height: 58px;
             border: none;
-            border-radius: 7px;
-            background: linear-gradient(90deg, #2a0303, #a80d0d);
+            padding: 15px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, #ffc328, #ff8a00);
             color: #fff;
             font-size: 18px;
-            font-weight: 700;
+            font-weight: bold;
             cursor: pointer;
         }
 
-        .login-btn i {
-            margin-left: 10px;
-        }
-
-        .help-text {
-            text-align: center;
-            margin-top: 28px;
-            color: #666;
-            font-size: 15px;
-        }
-
-        .help-text a {
-            color: #9d0a0a;
-            font-weight: 700;
-            text-decoration: none;
-        }
-
-        .register-text {
+        .back-btn {
+            display: block;
             text-align: center;
             margin-top: 18px;
-            color: #666;
-            font-size: 15px;
-        }
-
-        .register-text a {
-            color: #8c0707;
-            font-weight: 700;
+            color: #ffad3b;
             text-decoration: none;
+            font-weight: bold;
         }
 
-        .help-text a:hover,
-        .register-text a:hover {
-            text-decoration: underline;
+        .message {
+            background: rgba(0,180,90,.2);
+            border: 1px solid #00c46a;
+            color: #d8ffe9;
+            padding: 13px;
+            border-radius: 8px;
+            margin-bottom: 18px;
         }
 
-        @media (max-width: 900px) {
-            .login-page {
-                flex-direction: column;
-            }
-
-            .brand-side,
-            .form-side {
-                width: 100%;
-                min-height: auto;
-            }
-
-            .brand-side {
-                padding: 35px 20px;
-            }
-
-            .brand-box h1 {
-                font-size: 30px;
-            }
-
-            .brand-box h3 {
-                font-size: 17px;
-            }
-
-            .welcome-text {
-                margin-top: 30px;
-            }
-
-            .stats-box {
-                margin-top: 35px;
-            }
-
-            .form-side {
-                padding: 25px 15px 40px;
-            }
-
-            .login-card {
-                padding: 35px 24px;
-                border-radius: 18px;
-            }
-
-            .login-card h2 {
-                font-size: 30px;
-            }
+        .error {
+            background: #f8d0d5;
+            color: #79000b;
+            padding: 13px;
+            border-radius: 8px;
+            margin-bottom: 18px;
         }
 
-        @media (max-width: 480px) {
-            .stats-box {
-                flex-direction: column;
-            }
+        .user-box {
+            background: rgba(255,255,255,.08);
+            border: 1px solid rgba(255,255,255,.18);
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 18px;
+        }
 
-            .stats-box div {
-                width: 100%;
-                border-right: none;
-                border-bottom: 1px solid rgba(255,255,255,0.35);
-            }
-
-            .stats-box div:last-child {
-                border-bottom: none;
-            }
+        .user-box p {
+            margin: 5px 0;
         }
     </style>
+    <link rel="stylesheet" href="css/style.css?v=10">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 </head>
 <body>
 
+<div class="password-card">
 
-<?php include 'header.php'; ?>
-<div class="login-page">
+    <h2>Forgot Password</h2>
 
-    <div class="brand-side">
-        <div class="brand-box">
+    <?php if ($message != "") { ?>
+        <div class="message"><?= e($message); ?></div>
+    <?php } ?>
 
-            <img src="images/logo.png" class="main-logo" alt="Logo">
+    <?php if ($error != "") { ?>
+        <div class="error"><?= e($error); ?></div>
+    <?php } ?>
 
-            <h1>
-                <span>VISHWAKARMA</span>
-                JAGRUTI MANCH
-            </h1>
+    <?php if ($step == 1) { ?>
 
-            <h3>एकता • सेवा • संस्कार • समृद्धि</h3>
+        <form method="POST">
 
-            <p class="welcome-text">Reset Your Password</p>
-            <p class="small-text">
-                Enter your registered email or mobile number. We will help you recover your account.
-            </p>
+            <label>User Role</label>
+            <select name="role" required>
+                <option value="">Select Role</option>
 
-            <div class="stats-box">
-                <div>
-                    <i class="fa-solid fa-users"></i>
-                    <h2>50K+</h2>
-                    <p>Members</p>
-                </div>
+                <?php
+                if ($roles && mysqli_num_rows($roles) > 0) {
+                    while ($roleRow = mysqli_fetch_assoc($roles)) {
+                ?>
+                    <option value="<?= e($roleRow['role_key']); ?>">
+                        <?= e($roleRow['role_name']); ?>
+                    </option>
+                <?php
+                    }
+                }
+                ?>
+            </select>
 
-                <div>
-                    <i class="fa-solid fa-gopuram"></i>
-                    <h2>1,245+</h2>
-                    <p>Temples</p>
-                </div>
+            <label>Username / Mobile / Email</label>
+            <input type="text" name="mobile_email" placeholder="Enter username, mobile or email" required>
 
-                <div>
-                    <i class="fa-solid fa-user-group"></i>
-                    <h2>22</h2>
-                    <p>States</p>
-                </div>
-            </div>
+            <button type="submit" name="find_user" class="btn">Find Account</button>
 
+        </form>
+
+    <?php } ?>
+
+    <?php if ($step == 2 && $found_user) { ?>
+
+        <div class="user-box">
+            <p><b>Name:</b> <?= e($found_user['name']); ?></p>
+            <p><b>Mobile:</b> <?= e($found_user['mobile']); ?></p>
+            <p><b>Email:</b> <?= e($found_user['email']); ?></p>
+            <p><b>Role:</b> <?= e($found_user['role']); ?></p>
         </div>
-    </div>
 
-    <div class="form-side">
-        <div class="login-card">
+        <form method="POST">
 
-            <h2>Forgot Password?</h2>
-            <p class="sub-title">Recover your account password</p>
+            <input type="hidden" name="user_id" value="<?= intval($found_user['id']); ?>">
 
-            <form action="reset-password.php" method="POST">
+            <label>New Password</label>
+            <input type="password" name="new_password" placeholder="Enter new password" required>
 
-                <label>Email / Mobile Number</label>
+            <label>Confirm Password</label>
+            <input type="password" name="confirm_password" placeholder="Confirm password" required>
 
-                <div class="input-box">
-                    <i class="fa-regular fa-user"></i>
-                    <input type="text" name="mobile_email" placeholder="Enter your registered email or mobile number" required>
-                </div>
+            <button type="submit" name="reset_password" class="btn">Reset Password</button>
 
-                <button type="submit" class="login-btn">
-                    Continue <i class="fa-solid fa-arrow-right"></i>
-                </button>
+        </form>
 
-                <p class="help-text">
-                    Remember your password?
-                    <a href="login.php">Back to Login</a>
-                </p>
+    <?php } ?>
 
-                <p class="register-text">
-                    Don't have an account?
-                    <a href="register.php">Register Now</a>
-                </p>
-
-            </form>
-
-        </div>
-    </div>
+    <a href="index.php" class="back-btn">Back to Login</a>
 
 </div>
 
